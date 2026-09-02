@@ -1,6 +1,7 @@
 """
 Kubernetes Tenant Provisioner
-Renders production manifests and manages tenant Kubernetes namespaces, secrets, and deployments.
+Renders production manifests and manages self-contained tenant Kubernetes namespaces,
+secrets, OpenWebUI deployments, and dedicated LiteLLM proxies.
 """
 
 from __future__ import annotations
@@ -25,25 +26,22 @@ class K8sProvisionerError(Exception):
 class K8sProvisioner:
     def __init__(
         self,
-        gateway_endpoint: str = "http://litellm.litellm.svc.cluster.local:4000/v1",
-        gateway_namespace: str = "litellm",
         ingress_namespace: str = "ingress-nginx",
         kubectl_bin: str = "kubectl"
     ):
-        self.gateway_endpoint = gateway_endpoint
-        self.gateway_namespace = gateway_namespace
         self.ingress_namespace = ingress_namespace
         self.kubectl_bin = kubectl_bin
 
     def get_namespace_name(self, tenant_id: str) -> str:
         return f"tenant-{tenant_id}"
 
-    def render_manifests(self, spec: TenantSpecification, virtual_key: str) -> List[Dict[str, Any]]:
+    def render_manifests(self, spec: TenantSpecification, virtual_key: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Renders all Kubernetes manifests for a tenant as standard Python dictionaries.
+        Renders all Kubernetes manifests for a self-contained tenant stack.
         """
         ns = self.get_namespace_name(spec.metadata.tenant_id)
         tenant_id = spec.metadata.tenant_id
+        local_master_key = virtual_key or f"sk-tenant-{tenant_id}-{hashlib.sha256(tenant_id.encode()).hexdigest()[:16]}"
 
         # 1. Namespace
         namespace_manifest = {
@@ -61,7 +59,7 @@ class K8sProvisioner:
             }
         }
 
-        # 2. ResourceQuota
+        # 2. ResourceQuota (Sized for both OpenWebUI and LiteLLM pods)
         resource_quota_manifest = {
             "apiVersion": "v1",
             "kind": "ResourceQuota",
@@ -109,7 +107,7 @@ class K8sProvisioner:
             }
         }
 
-        # 4. PVC
+        # 4. OpenWebUI Dedicated PVC
         pvc_manifest = {
             "apiVersion": "v1",
             "kind": "PersistentVolumeClaim",
@@ -134,8 +132,8 @@ class K8sProvisioner:
         if spec.compute.storage_class:
             pvc_manifest["spec"]["storageClassName"] = spec.compute.storage_class
 
-        # 5. ConfigMap for Branding
-        config_map_manifest = {
+        # 5. OpenWebUI Branding ConfigMap
+        branding_config_manifest = {
             "apiVersion": "v1",
             "kind": "ConfigMap",
             "metadata": {
@@ -161,10 +159,69 @@ class K8sProvisioner:
             }
         }
 
-        # 6. Secret for Credentials
+        # 6. Dedicated LiteLLM ConfigMap
+        model_list = []
+        for model_name in spec.governance.allowed_models:
+            provider = "openai"
+            if "claude" in model_name:
+                provider = "anthropic"
+            elif "gemini" in model_name:
+                provider = "gemini"
+
+            model_list.append({
+                "model_name": model_name,
+                "litellm_params": {
+                    "model": f"{provider}/{model_name}",
+                    "rpm": spec.governance.rpm_limit,
+                    "tpm": spec.governance.tpm_limit
+                }
+            })
+
+        litellm_config_dict = {
+            "model_list": model_list,
+            "litellm_settings": {
+                "drop_params": True,
+                "set_verbose": False,
+                "max_budget": spec.governance.max_budget_usd,
+                "budget_duration": spec.governance.budget_duration,
+                "fallbacks": [
+                    {"gpt-4o": ["claude-3-5-sonnet"]}
+                ]
+            },
+            "general_settings": {
+                "master_key": "os.environ/LITELLM_MASTER_KEY"
+            }
+        }
+
+        litellm_configmap_manifest = {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "openwebui-litellm-config",
+                "namespace": ns,
+                "labels": {
+                    "app.kubernetes.io/name": "litellm",
+                    "app.kubernetes.io/part-of": "openwebui-tenant",
+                    "saas.platform.io/tenant-id": tenant_id
+                }
+            },
+            "data": {
+                "config.yaml": yaml.dump(litellm_config_dict, sort_keys=False)
+            }
+        }
+
+        # 7. Unified Credentials Secret (OpenWebUI + Local LiteLLM + BYOK Upstream Keys)
+        cred = spec.upstream_credentials
         secret_data: Dict[str, str] = {
-            "OPENAI_API_KEY": virtual_key,
-            "WEBUI_SECRET_KEY": hashlib.sha256(f"{tenant_id}-secret-{virtual_key}".encode()).hexdigest(),
+            "LITELLM_MASTER_KEY": local_master_key,
+            "OPENAI_API_KEY": cred.openai_api_key or f"sk-platform-mock-key-{tenant_id}",
+            "ANTHROPIC_API_KEY": cred.anthropic_api_key or "",
+            "AZURE_API_KEY": cred.azure_openai_api_key or "",
+            "AZURE_API_BASE": cred.azure_openai_endpoint or "",
+            "AWS_ACCESS_KEY_ID": cred.aws_access_key_id or "",
+            "AWS_SECRET_ACCESS_KEY": cred.aws_secret_access_key or "",
+            "AWS_REGION_NAME": cred.aws_region_name or "us-east-1",
+            "WEBUI_SECRET_KEY": hashlib.sha256(f"{tenant_id}-secret-{local_master_key}".encode()).hexdigest(),
         }
         if spec.identity.ldap_enabled:
             secret_data["LDAP_APP_PASSWORD"] = spec.identity.bind_password
@@ -190,111 +247,20 @@ class K8sProvisioner:
             "stringData": secret_data
         }
 
-        # 7. NetworkPolicy (Strict Zero-Trust)
-        network_policy_manifest = {
-            "apiVersion": "networking.k8s.io/v1",
-            "kind": "NetworkPolicy",
-            "metadata": {
-                "name": "openwebui-zero-trust-netpol",
-                "namespace": ns,
-                "labels": {
-                    "app.kubernetes.io/name": "openwebui",
-                    "app.kubernetes.io/part-of": "openwebui-tenant",
-                    "saas.platform.io/tenant-id": tenant_id
-                }
-            },
-            "spec": {
-                "podSelector": {
-                    "matchLabels": {"app.kubernetes.io/name": "openwebui"}
-                },
-                "policyTypes": ["Ingress", "Egress"],
-                "ingress": [
-                    {
-                        "from": [
-                            {
-                                "namespaceSelector": {
-                                    "matchLabels": {
-                                        "kubernetes.io/metadata.name": self.ingress_namespace
-                                    }
-                                }
-                            }
-                        ],
-                        "ports": [{"protocol": "TCP", "port": 8080}]
-                    }
-                ],
-                "egress": [
-                    # CoreDNS
-                    {
-                        "to": [
-                            {
-                                "namespaceSelector": {
-                                    "matchLabels": {
-                                        "kubernetes.io/metadata.name": "kube-system"
-                                    }
-                                },
-                                "podSelector": {
-                                    "matchLabels": {"k8s-app": "kube-dns"}
-                                }
-                            }
-                        ],
-                        "ports": [
-                            {"protocol": "UDP", "port": 53},
-                            {"protocol": "TCP", "port": 53}
-                        ]
-                    },
-                    # Central LiteLLM Gateway
-                    {
-                        "to": [
-                            {
-                                "namespaceSelector": {
-                                    "matchLabels": {
-                                        "kubernetes.io/metadata.name": self.gateway_namespace
-                                    }
-                                },
-                                "podSelector": {
-                                    "matchLabels": {"app.kubernetes.io/name": "litellm-proxy"}
-                                }
-                            }
-                        ],
-                        "ports": [{"protocol": "TCP", "port": 4000}]
-                    }
-                ]
-            }
-        }
-
-        # Add LDAPS egress if enabled
-        if spec.identity.ldap_enabled:
-            network_policy_manifest["spec"]["egress"].append({
-                "to": [
-                    {
-                        "ipBlock": {
-                            "cidr": "0.0.0.0/0",
-                            "except": [
-                                "10.0.0.0/8",
-                                "172.16.0.0/12",
-                                "192.168.0.0/16",
-                                "169.254.169.254/32"
-                            ]
-                        }
-                    }
-                ],
-                "ports": [{"protocol": "TCP", "port": spec.identity.server_port}]
-            })
-
-        # 8. Deployment
-        env_vars = [
+        # 8. OpenWebUI Deployment (Directs API to local in-namespace LiteLLM)
+        openwebui_env = [
             {"name": "PORT", "value": "8080"},
             {"name": "DATA_DIR", "value": "/app/backend/data"},
             {"name": "WEBUI_AUTH", "value": "true"},
             {"name": "ENABLE_OPENAI_API", "value": "true"},
             {"name": "ENABLE_OLLAMA_API", "value": "false"},
-            {"name": "OPENAI_API_BASE_URL", "value": self.gateway_endpoint},
+            {"name": "OPENAI_API_BASE_URL", "value": "http://litellm:4000/v1"},
             {
                 "name": "OPENAI_API_KEY",
                 "valueFrom": {
                     "secretKeyRef": {
                         "name": "openwebui-credentials",
-                        "key": "OPENAI_API_KEY"
+                        "key": "LITELLM_MASTER_KEY"
                     }
                 }
             },
@@ -355,7 +321,7 @@ class K8sProvisioner:
         ]
 
         if spec.identity.ldap_enabled:
-            env_vars.extend([
+            openwebui_env.extend([
                 {"name": "ENABLE_LDAP", "value": "true"},
                 {"name": "LDAP_SERVER_LABEL", "value": f"{spec.metadata.tenant_name} Active Directory"},
                 {"name": "LDAP_SERVER_HOST", "value": spec.identity.server_host},
@@ -377,9 +343,9 @@ class K8sProvisioner:
                 {"name": "LDAP_SEARCH_FILTERS", "value": spec.identity.search_filter or ""}
             ])
             if spec.identity.ca_cert_pem:
-                env_vars.append({"name": "LDAP_CA_CERT_FILE", "value": "/app/backend/certs/ldap_ca.crt"})
+                openwebui_env.append({"name": "LDAP_CA_CERT_FILE", "value": "/app/backend/certs/ldap_ca.crt"})
 
-        deployment_manifest = {
+        openwebui_deployment_manifest = {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
             "metadata": {
@@ -418,7 +384,7 @@ class K8sProvisioner:
                                 "image": "ghcr.io/open-webui/open-webui:main",
                                 "imagePullPolicy": "IfNotPresent",
                                 "ports": [{"containerPort": 8080, "name": "http"}],
-                                "env": env_vars,
+                                "env": openwebui_env,
                                 "volumeMounts": [
                                     {"name": "data-volume", "mountPath": "/app/backend/data"}
                                 ],
@@ -459,8 +425,8 @@ class K8sProvisioner:
             }
         }
 
-        # 9. Service
-        service_manifest = {
+        # 9. OpenWebUI Service
+        openwebui_service_manifest = {
             "apiVersion": "v1",
             "kind": "Service",
             "metadata": {
@@ -479,7 +445,296 @@ class K8sProvisioner:
             }
         }
 
-        # 10. Ingress
+        # 10. Dedicated LiteLLM Deployment
+        litellm_deployment_manifest = {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": "litellm",
+                "namespace": ns,
+                "labels": {
+                    "app.kubernetes.io/name": "litellm",
+                    "app.kubernetes.io/part-of": "openwebui-tenant",
+                    "saas.platform.io/tenant-id": tenant_id
+                }
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {
+                    "matchLabels": {"app.kubernetes.io/name": "litellm"}
+                },
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            "app.kubernetes.io/name": "litellm",
+                            "app.kubernetes.io/part-of": "openwebui-tenant",
+                            "saas.platform.io/tenant-id": tenant_id
+                        }
+                    },
+                    "spec": {
+                        "automountServiceAccountToken": False,
+                        "securityContext": {
+                            "runAsNonRoot": True,
+                            "runAsUser": 1000,
+                            "runAsGroup": 1000,
+                            "fsGroup": 1000
+                        },
+                        "containers": [
+                            {
+                                "name": "litellm",
+                                "image": "ghcr.io/berriai/litellm:main-v1.40.0",
+                                "imagePullPolicy": "IfNotPresent",
+                                "args": ["--config", "/app/config.yaml", "--port", "4000"],
+                                "ports": [{"containerPort": 4000, "name": "http", "protocol": "TCP"}],
+                                "env": [
+                                    {
+                                        "name": "LITELLM_MASTER_KEY",
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "name": "openwebui-credentials",
+                                                "key": "LITELLM_MASTER_KEY"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "OPENAI_API_KEY",
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "name": "openwebui-credentials",
+                                                "key": "OPENAI_API_KEY"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "name": "ANTHROPIC_API_KEY",
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "name": "openwebui-credentials",
+                                                "key": "ANTHROPIC_API_KEY",
+                                                "optional": True
+                                            }
+                                        }
+                                    }
+                                ],
+                                "volumeMounts": [
+                                    {
+                                        "name": "config-volume",
+                                        "mountPath": "/app/config.yaml",
+                                        "subPath": "config.yaml",
+                                        "readOnly": True
+                                    },
+                                    {"name": "tmp-volume", "mountPath": "/tmp"}
+                                ],
+                                "resources": {
+                                    "requests": {"cpu": "100m", "memory": "128Mi"},
+                                    "limits": {"cpu": "500m", "memory": "512Mi"}
+                                },
+                                "securityContext": {
+                                    "allowPrivilegeEscalation": False,
+                                    "capabilities": {"drop": ["ALL"]}
+                                },
+                                "livenessProbe": {
+                                    "httpGet": {"path": "/health", "port": 4000},
+                                    "initialDelaySeconds": 30,
+                                    "periodSeconds": 15
+                                },
+                                "readinessProbe": {
+                                    "httpGet": {"path": "/health", "port": 4000},
+                                    "initialDelaySeconds": 15,
+                                    "periodSeconds": 10
+                                }
+                            }
+                        ],
+                        "volumes": [
+                            {
+                                "name": "config-volume",
+                                "configMap": {"name": "openwebui-litellm-config"}
+                            },
+                            {"name": "tmp-volume", "emptyDir": {}}
+                        ]
+                    }
+                }
+            }
+        }
+
+        # 11. Dedicated LiteLLM Service
+        litellm_service_manifest = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": "litellm",
+                "namespace": ns,
+                "labels": {
+                    "app.kubernetes.io/name": "litellm",
+                    "app.kubernetes.io/part-of": "openwebui-tenant",
+                    "saas.platform.io/tenant-id": tenant_id
+                }
+            },
+            "spec": {
+                "type": "ClusterIP",
+                "ports": [{"port": 4000, "targetPort": 4000, "protocol": "TCP", "name": "http"}],
+                "selector": {"app.kubernetes.io/name": "litellm"}
+            }
+        }
+
+        # 12. OpenWebUI Zero-Trust NetworkPolicy
+        openwebui_netpol_manifest = {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {
+                "name": "openwebui-zero-trust-netpol",
+                "namespace": ns,
+                "labels": {
+                    "app.kubernetes.io/name": "openwebui",
+                    "app.kubernetes.io/part-of": "openwebui-tenant",
+                    "saas.platform.io/tenant-id": tenant_id
+                }
+            },
+            "spec": {
+                "podSelector": {
+                    "matchLabels": {"app.kubernetes.io/name": "openwebui"}
+                },
+                "policyTypes": ["Ingress", "Egress"],
+                "ingress": [
+                    {
+                        "from": [
+                            {
+                                "namespaceSelector": {
+                                    "matchLabels": {
+                                        "kubernetes.io/metadata.name": self.ingress_namespace
+                                    }
+                                }
+                            }
+                        ],
+                        "ports": [{"protocol": "TCP", "port": 8080}]
+                    }
+                ],
+                "egress": [
+                    # CoreDNS in kube-system
+                    {
+                        "to": [
+                            {
+                                "namespaceSelector": {
+                                    "matchLabels": {
+                                        "kubernetes.io/metadata.name": "kube-system"
+                                    }
+                                },
+                                "podSelector": {
+                                    "matchLabels": {"k8s-app": "kube-dns"}
+                                }
+                            }
+                        ],
+                        "ports": [
+                            {"protocol": "UDP", "port": 53},
+                            {"protocol": "TCP", "port": 53}
+                        ]
+                    },
+                    # Egress ONLY to local LiteLLM proxy in this namespace
+                    {
+                        "to": [
+                            {
+                                "podSelector": {
+                                    "matchLabels": {"app.kubernetes.io/name": "litellm"}
+                                }
+                            }
+                        ],
+                        "ports": [{"protocol": "TCP", "port": 4000}]
+                    }
+                ]
+            }
+        }
+
+        if spec.identity.ldap_enabled:
+            openwebui_netpol_manifest["spec"]["egress"].append({
+                "to": [
+                    {
+                        "ipBlock": {
+                            "cidr": "0.0.0.0/0",
+                            "except": [
+                                "10.0.0.0/8",
+                                "172.16.0.0/12",
+                                "192.168.0.0/16",
+                                "169.254.169.254/32"
+                            ]
+                        }
+                    }
+                ],
+                "ports": [{"protocol": "TCP", "port": spec.identity.server_port}]
+            })
+
+        # 13. LiteLLM Zero-Trust NetworkPolicy
+        litellm_netpol_manifest = {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {
+                "name": "litellm-zero-trust-netpol",
+                "namespace": ns,
+                "labels": {
+                    "app.kubernetes.io/name": "litellm",
+                    "app.kubernetes.io/part-of": "openwebui-tenant",
+                    "saas.platform.io/tenant-id": tenant_id
+                }
+            },
+            "spec": {
+                "podSelector": {
+                    "matchLabels": {"app.kubernetes.io/name": "litellm"}
+                },
+                "policyTypes": ["Ingress", "Egress"],
+                "ingress": [
+                    {
+                        # Only allow local OpenWebUI
+                        "from": [
+                            {
+                                "podSelector": {
+                                    "matchLabels": {"app.kubernetes.io/name": "openwebui"}
+                                }
+                            }
+                        ],
+                        "ports": [{"protocol": "TCP", "port": 4000}]
+                    }
+                ],
+                "egress": [
+                    # CoreDNS
+                    {
+                        "to": [
+                            {
+                                "namespaceSelector": {
+                                    "matchLabels": {
+                                        "kubernetes.io/metadata.name": "kube-system"
+                                    }
+                                },
+                                "podSelector": {
+                                    "matchLabels": {"k8s-app": "kube-dns"}
+                                }
+                            }
+                        ],
+                        "ports": [
+                            {"protocol": "UDP", "port": 53},
+                            {"protocol": "TCP", "port": 53}
+                        ]
+                    },
+                    # Outbound HTTPS to external Cloud LLM Providers
+                    {
+                        "to": [
+                            {
+                                "ipBlock": {
+                                    "cidr": "0.0.0.0/0",
+                                    "except": [
+                                        "169.254.169.254/32",
+                                        "10.0.0.0/8",
+                                        "172.16.0.0/12",
+                                        "192.168.0.0/16"
+                                    ]
+                                }
+                            }
+                        ],
+                        "ports": [{"protocol": "TCP", "port": 443}]
+                    }
+                ]
+            }
+        }
+
+        # 14. Ingress
         ingress_manifest = {
             "apiVersion": "networking.k8s.io/v1",
             "kind": "Ingress",
@@ -534,11 +789,15 @@ class K8sProvisioner:
             resource_quota_manifest,
             limit_range_manifest,
             pvc_manifest,
-            config_map_manifest,
+            branding_config_manifest,
+            litellm_configmap_manifest,
             secret_manifest,
-            network_policy_manifest,
-            deployment_manifest,
-            service_manifest,
+            openwebui_deployment_manifest,
+            openwebui_service_manifest,
+            litellm_deployment_manifest,
+            litellm_service_manifest,
+            openwebui_netpol_manifest,
+            litellm_netpol_manifest,
             ingress_manifest
         ]
 
