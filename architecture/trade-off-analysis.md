@@ -7,7 +7,7 @@ Designing an enterprise B2B SaaS platform for hosting AI chat workspaces require
 2. **Operational Simplicity & Reliability**: Maintaining predictable provisioning, deterministic rollbacks, straightforward troubleshooting, and low administrative overhead.
 3. **Resource & Financial Efficiency**: Managing compute, memory, and LLM token expenditures while providing high availability.
 
-This document evaluates the key architectural trade-offs across **Tenancy Isolation Models**, **Storage Architectures**, and **Provisioning Mechanisms**, and details the rationale behind our chosen production design.
+This document evaluates the key architectural trade-offs across **Tenancy Isolation Models**, **LLM Gateway Architectures**, **Storage Architectures**, and **Provisioning Mechanisms**, and details the rationale behind our chosen production design.
 
 ---
 
@@ -35,7 +35,29 @@ Therefore, **Namespace-per-Tenant** provides the ideal balance: genuine cryptogr
 
 ---
 
-## 2. Storage Architectures
+## 2. LLM Gateway Architectures: Central Gateway vs. Per-Tenant Gateway
+
+We evaluated two architectural topologies for positioning the LiteLLM Proxy Gateway:
+
+| Architectural Vector | Model A: Centralized LiteLLM Gateway | Model B: Per-Tenant LiteLLM Gateway (Chosen) |
+| :--- | :--- | :--- |
+| **Blast Radius / Failure Domain** | ❌ **Single Point of Failure (SPOF)**: Outage in central gateway brings down all corporate tenants. | ✅ **Zero Blast Radius**: An issue or memory leak in Tenant A's proxy has zero impact on Tenant B. |
+| **Credential Honeypot** | ❌ **High Risk**: Central namespace holds all upstream master keys across the entire business. | ✅ **Compartmentalized**: Credentials are strictly scoped inside `tenant-<id>` secrets. |
+| **BYOK (Bring Your Own Key)** | ⚖️ Complex: Requires multi-tenant credential mapping and dynamic routing in central proxy. | ✅ **Native & First-Class**: Tenant configures their private Azure OpenAI, AWS Bedrock, or OpenAI keys locally. |
+| **Cache & Log Confidentiality** | ⚠️ Risk of prompt cache bleed across tenants if exact-match caching key hashing fails. | ✅ **Physically Isolated**: Dedicated in-memory or SQLite cache per tenant; zero cross-tenant cache hit risk. |
+| **Custom Routing Policies** | ⚖️ Shared configuration file churn; global deployment updates for individual tenant changes. | ✅ **Decentralized**: Each tenant defines independent model aliases, fallbacks, and local rate limits. |
+| **Cross-Tenant Network Flow**| Requires tenant pods to route across namespaces to `litellm` control plane. | ✅ **Intra-Namespace Only**: OpenWebUI talks to `http://litellm:4000/v1` locally within its own namespace. |
+| **Resource Overhead** | ✅ Minimal (~2–4 GB for shared cluster). | ⚖️ Moderate (~100m CPU, 128–256 MiB RAM per tenant proxy pod). |
+
+### Justification for Model B (Per-Tenant LiteLLM Gateway)
+In enterprise B2B environments, data privacy and failure isolation outweigh minimal resource savings:
+1. **BYOK Compliance**: Enterprise customers frequently demand using their existing enterprise agreements (e.g., direct Azure OpenAI instances under corporate HIPAA/BAA contracts). A per-tenant LiteLLM instance allows clients to input their corporate credentials directly into their isolated namespace.
+2. **Zero Blast Radius**: Upstream rate-limit throttling or bad prompts from one tenant cannot destabilize other tenants.
+3. **Network Boundary Simplicity**: OpenWebUI never needs egress permissions to another namespace. All chat traffic stays strictly within the tenant's namespace perimeter before the local proxy egresses to upstream APIs.
+
+---
+
+## 3. Storage Architectures
 
 OpenWebUI requires persistent state for user accounts, session history, file uploads, document embeddings, and model settings. We evaluated three persistence strategies:
 
@@ -55,34 +77,25 @@ OpenWebUI requires persistent state for user accounts, session history, file upl
 
 ---
 
-## 3. Provisioning & Lifecycle Mechanisms
+## 4. Provisioning & Lifecycle Mechanisms
 
 We evaluated three mechanisms for orchestrating tenant onboarding, updates, and deprovisioning:
 
 | Feature / Criteria | 1. Custom Kubernetes Operator | 2. Pure GitOps (ArgoCD / Flux) | 3. Automated Orchestration Engine (`tenant-manager`) (Chosen) |
 | :--- | :--- | :--- | :--- |
 | **Execution Synchronicity** | Asynchronous (Eventual consistency) | Asynchronous (Git polling / webhook) | **Synchronous**: Direct feedback to provisioning caller |
-| **External API Integration** | Complex (Requires reconciling external LiteLLM API state in Go/Python controller) | Difficult (Requires external-secrets or sidecar hooks to generate LiteLLM keys) | **Native**: First-class API client for LiteLLM virtual key creation & revocation |
-| **Atomic Rollback** | Hard (Must implement two-phase commit inside reconciliation loop) | No rollback of external resources on manifest failure | **Built-in**: Transaction manager rolls back LiteLLM keys and K8s namespaces on failure |
+| **Atomic Rollback** | Hard (Must implement two-phase commit inside reconciliation loop) | No automatic rollback of external state | **Built-in**: Transaction manager rolls back namespaces on rollout failure |
 | **GitOps Compatibility** | Low | Native | **Hybrid**: Generates GitOps-ready manifests and charts while supporting direct CLI automation |
 | **Developer / SRE UX** | Requires cluster-wide CRD and controller installation | Requires Git commit, PR merge, and sync wait | Single CLI command: `tenant-manager provision acme.yaml` with instant status |
 
-### Justification for Option 3 (`tenant-manager` CLI & Engine)
-A purely declarative Kubernetes Operator is well-suited for internal cluster resources, but struggles with cross-system distributed transactions—specifically, negotiating with the external LiteLLM Gateway API to create virtual keys, setting budgets, validating LDAPS connectivity, and rolling back if a subdomain DNS collision or network failure occurs.
-
-Our chosen solution—the **`tenant-manager` Orchestration Engine**:
-1. Implements a transactional state machine with automatic rollback.
-2. Directly manages the LiteLLM Admin REST API for virtual key generation, budget tracking, and revocation.
-3. Renders and applies standard Helm charts and manifests, allowing teams to either run it as an interactive CLI or incorporate the generated outputs into an ArgoCD / Flux GitOps repository.
-
 ---
 
-## 4. Summary Decision Matrix
+## 5. Summary Decision Matrix
 
 | Dimension | Selected Architecture | Key Reason |
 | :--- | :--- | :--- |
 | **Tenancy Boundary** | **Namespace-per-Tenant** | Uncompromising security, independent LDAPS, zero cross-tenant data leakage. |
-| **LLM Gateway** | **Centralized LiteLLM Proxy** | Upstream API key secrecy, centralized budgeting, multi-provider failover. |
+| **LLM Gateway** | **Per-Tenant LiteLLM Proxy** | Zero blast radius, native BYOK credential compartmentalization, zero prompt cache bleed. |
 | **Storage** | **Dedicated PVC (SQLite) / Dedicated DB** | Complete data compartmentalization, instant GDPR compliance. |
-| **Networking** | **Zero-Trust NetworkPolicies** | Default-deny; egress strictly whitelisted to DNS, LiteLLM, and corporate LDAPS. |
-| **Lifecycle** | **Transactional Orchestrator (`tenant-manager`)** | Atomic end-to-end provisioning with rollback across LiteLLM and Kubernetes. |
+| **Networking** | **Zero-Trust NetworkPolicies** | Default-deny; OpenWebUI routes only to local LiteLLM:4000; LiteLLM egresses to upstream LLMs. |
+| **Lifecycle** | **Transactional Orchestrator (`tenant-manager`)** | Atomic end-to-end provisioning with rollback of complete tenant stack. |

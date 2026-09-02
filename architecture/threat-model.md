@@ -1,8 +1,8 @@
-# Threat Model & Security Architecture
+# Threat Model & Security Architecture (Decentralized Per-Tenant Gateway)
 
 ## 1. Threat Modeling Methodology
 
-This document establishes the security posture and threat model for the Multi-Tenant OpenWebUI SaaS Platform, evaluating threats across the **STRIDE** methodology (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) and mapping mitigations to Kubernetes defense-in-depth controls.
+This document establishes the security posture and threat model for the Multi-Tenant OpenWebUI SaaS Platform under the **Decentralized Per-Tenant Gateway** architecture, evaluating threats across the **STRIDE** methodology (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege) and mapping mitigations to Kubernetes defense-in-depth controls.
 
 ---
 
@@ -18,19 +18,24 @@ This document establishes the security posture and threat model for the Multi-Te
                                                   │
                     ┌─────────────────────────────┴─────────────────────────────┐
                     ▼                                                           ▼
-      [ Threat Vector 2: Pod Compromise ]                         [ Threat Vector 3: Credential Theft ]
-       - Cross-tenant network pivot                                - Upstream LLM key extraction
-       - Host escape / container breakout                          - LDAPS bind password leakage
-                    │                                                           │
-                    ▼                                                           ▼
-      ┌───────────────────────────┐                               ┌───────────────────────────┐
-      │ Tenant Pod (OpenWebUI)    │                               │ LiteLLM Proxy Gateway     │
-      └─────────────┬─────────────┘                               └─────────────┬─────────────┘
-                    │                                                           │
-                    ▼                                                           ▼
-      [ Threat Vector 4: LLM Abuse ]                              [ Threat Vector 5: Supply Chain & Upstream ]
-       - Token & budget exhaustion                                 - Upstream provider outage / MITM
-       - Prompt injection into backend                             - Data residency violations
+       [ Isolated Tenant Perimeter A ]                             [ Isolated Tenant Perimeter B ]
+       ┌───────────────────────────────┐                           ┌───────────────────────────────┐
+       │ Namespace: tenant-acme        │                           │ Namespace: tenant-globex      │
+       │                               │                           │                               │
+       │  ┌─────────────────────────┐  │                           │  ┌─────────────────────────┐  │
+       │  │ OpenWebUI Pod           │  │                           │  │ OpenWebUI Pod           │  │
+       │  └───────────┬─────────────┘  │                           │  └───────────┬─────────────┘  │
+       │              │ Local HTTP     │                           │              │ Local HTTP     │
+       │              ▼               │                           │              ▼               │
+       │  ┌─────────────────────────┐  │                           │  ┌─────────────────────────┐  │
+       │  │ Dedicated LiteLLM Proxy │  │                           │  │ Dedicated LiteLLM Proxy │  │
+       │  │ (Acme BYOK Credentials) │  │                           │  │ (Globex Credentials)    │  │
+       │  └───────────┬─────────────┘  │                           │  └───────────┬─────────────┘  │
+       └──────────────┼────────────────┘                           └──────────────┼────────────────┘
+                      │                                                           │
+                      ▼                                                           ▼
+         [ Outbound HTTPS 443 ]                                      [ Outbound HTTPS 443 ]
+          (OpenAI / Anthropic)                                        (Azure OpenAI / Bedrock)
 ```
 
 ---
@@ -39,7 +44,7 @@ This document establishes the security posture and threat model for the Multi-Te
 
 ### 3.1 Spoofing (Identity & Authentication)
 * **Threat S1: Tenant Impersonation via Subdomain Hijacking**
-  * *Attack*: An attacker accesses `victim.ai.saas.com` to manipulate another tenant's session.
+  * *Attack*: An attacker accesses `victim.ai.saasdomain.com` to manipulate another tenant's session.
   * *Mitigation*: Ingress TLS certificates are strictly provisioned per tenant via cert-manager. OpenWebUI session cookies are scoped strictly to the specific subdomain with `SameSite=Lax`, `Secure=true`, and `HttpOnly=true`.
 * **Threat S2: Unauthorized Directory Authentication**
   * *Attack*: Attacker attempts to forge LDAP credentials or bypass directory bind checks.
@@ -48,44 +53,45 @@ This document establishes the security posture and threat model for the Multi-Te
 ### 3.2 Tampering (Data & Manifest Integrity)
 * **Threat T1: Cross-Tenant Data Tampering**
   * *Attack*: A compromised container in Tenant A attempts to modify files or database records belonging to Tenant B.
-  * *Mitigation*: Complete storage isolation. Each tenant has a dedicated PersistentVolumeClaim. Kubernetes volumes are mounted with POSIX permissions isolated to UID 1000. Under no circumstances are multi-tenant PVCs shared.
-* **Threat T2: LiteLLM Configuration Tampering**
-  * *Attack*: A tenant modifies proxy settings to grant themselves unlimited tokens or access restricted models (e.g. GPT-4o 128k).
-  * *Mitigation*: LiteLLM configuration is housed entirely in the `litellm` namespace. Tenant pods cannot reach the Kubernetes API server and have zero RBAC permissions to read or modify ConfigMaps or Secrets outside their namespace.
+  * *Mitigation*: Complete storage and network isolation. Each tenant has a dedicated PersistentVolumeClaim. Kubernetes volumes are mounted with POSIX permissions isolated to UID 1000.
+* **Threat T2: LLM Configuration & Router Tampering**
+  * *Attack*: A tenant user modifies proxy settings to access unauthorized models.
+  * *Mitigation*: LiteLLM `config.yaml` is mounted read-only into the dedicated proxy container from an immutable Kubernetes ConfigMap managed by platform automation.
 
 ### 3.3 Repudiation (Auditability & Traceability)
-* **Threat R1: Untraceable LLM Spend or Malicious Prompt Generation**
-  * *Attack*: A tenant claims they were overbilled or disputes high token consumption.
-  * *Mitigation*: LiteLLM logs every request, model invoked, prompt token count, and completion token count in its PostgreSQL audit table, stamped with the tenant's immutable Virtual Key ID and timestamp.
+* **Threat R1: Disputed LLM Spend or Untraceable Token Consumption**
+  * *Attack*: A tenant disputes high token consumption or unauthorized model usage.
+  * *Mitigation*: The dedicated LiteLLM instance records request timestamps, model invocations, prompt token counts, and completion token counts in its localized persistent spend logs.
 * **Threat R2: Administrative Actions Lack Traceability**
-  * *Attack*: An engineer provisions or deletes a tenant without an audit trail.
-  * *Mitigation*: The `tenant-manager` CLI logs all actions with structured JSON outputs. Kubernetes audit logging captures all namespace and secret modifications.
+  * *Attack*: An engineer provisions, modifies, or deletes a tenant stack without an audit trail.
+  * *Mitigation*: The `tenant-manager` CLI logs all actions with structured JSON outputs. Kubernetes audit logging captures all namespace, deployment, and secret modifications.
 
-### 3.4 Information Disclosure (Confidentiality & Upstream Secrecy)
-* **Threat I1: Exposure of Upstream Provider API Keys (OpenAI, Anthropic, Bedrock)**
-  * *Attack*: A malicious user or rogue administrator in a tenant instance dumps environment variables or inspects network traffic to steal root provider API keys.
-  * *Mitigation*: **Zero-Knowledge Architecture**. Upstream provider keys are NEVER injected into tenant namespaces. The tenant pod only holds a scoped Virtual Key (`sk-tenant-...`). LiteLLM Proxy is the sole entity possessing upstream keys, and its admin API is restricted from tenant pod egress.
-* **Threat I2: Cross-Tenant Network Sniffing**
-  * *Attack*: A pod attempts to sniff traffic or query neighboring pods in the cluster.
-  * *Mitigation*: Kubernetes `NetworkPolicy` (enforced via Calico/Cilium) enforces default-deny ingress and egress. Inter-namespace network traffic is dropped at the kernel level.
+### 3.4 Information Disclosure (Confidentiality & Credential Compartmentalization)
+* **Threat I1: Exposure of Global Master API Keys (Eliminated via Per-Tenant Architecture)**
+  * *Analysis*: In a centralized architecture, a breach of the gateway exposes keys for *all* tenants.
+  * *Mitigation*: **Zero Shared Control Plane**. Upstream provider credentials (e.g. Acme's private OpenAI key or Azure OpenAI key) are stored strictly within `tenant-acme` Kubernetes Secrets. A breach of Tenant A's pod can never expose Tenant B's credentials.
+* **Threat I2: Cross-Tenant Prompt Cache Bleed**
+  * *Attack*: Tenant B receives a cached LLM completion containing confidential proprietary data submitted earlier by Tenant A.
+  * *Mitigation*: Caches are 100% physically isolated per namespace. Tenant A and Tenant B have completely separate proxy runtimes and cache stores. Cross-tenant cache bleed is architecturally impossible.
 * **Threat I3: Cloud Metadata Service Exfiltration (SSRF)**
-  * *Attack*: A prompt injection or SSRF exploit in OpenWebUI attempts to query `http://169.254.169.254/latest/meta-data/` to steal node IAM roles.
+  * *Attack*: A prompt injection or SSRF exploit in OpenWebUI or LiteLLM attempts to query `http://169.254.169.254/latest/meta-data/` to steal node IAM roles.
   * *Mitigation*: Tenant NetworkPolicies explicitly block all egress to link-local addresses (`169.254.169.254/32`). Furthermore, pods run without hostNetwork access.
 
 ### 3.5 Denial of Service (Availability & Quota Exhaustion)
-* **Threat D1: Financial DoS (Token Flooding / Budget Depletion)**
-  * *Attack*: A compromised user account loops high-context prompts to rack up exorbitant LLM bills.
-  * *Mitigation*: Dual-layer governance in LiteLLM:
-    1. **Rate Limiting**: Sliding-window RPM (Requests per Minute) and TPM (Tokens per Minute) enforced via Redis.
-    2. **Hard Budget Cutoff**: `max_budget` enforced in PostgreSQL. When current spend meets `max_budget`, LiteLLM immediately rejects further requests with HTTP 400/429 without contacting upstream providers.
-* **Threat D2: Compute & Memory Starvation (Noisy Neighbor)**
+* **Threat D1: Central Gateway Outage (Blast Radius Eliminated)**
+  * *Analysis*: If a central proxy crashes, all clients lose service.
+  * *Mitigation*: **Independent Failure Domains**. If Tenant A's LiteLLM proxy crashes or runs out of memory, Tenant B's workspace continues operating with zero degradation.
+* **Threat D2: Financial DoS (Token Flooding / Budget Depletion)**
+  * *Attack*: A compromised user loops high-context prompts to rack up exorbitant bills.
+  * *Mitigation*: Local LiteLLM enforces sliding-window rate limits (RPM / TPM) and hard monthly budget ceilings (`max_budget`). When spend reaches the ceiling, requests are immediately cut off.
+* **Threat D3: Compute & Memory Starvation (Noisy Neighbor)**
   * *Attack*: A tenant ingests a massive document into the vector store, consuming all cluster CPU/RAM.
   * *Mitigation*: Kubernetes `ResourceQuota` and `LimitRange` per tenant namespace enforce hard caps on CPU and Memory requests/limits.
 
 ### 3.6 Elevation of Privilege (Container & Cluster Security)
 * **Threat E1: Container Breakout to Kubernetes Node**
   * *Attack*: An exploit in Python/FastAPI allows arbitrary code execution leading to host takeover.
-  * *Mitigation*: Pod Security Standards enforced at the `restricted` level:
+  * *Mitigation*: Pod Security Standards enforced at the `restricted` level across all tenant pods:
     * `runAsNonRoot: true` (UID 1000)
     * `allowPrivilegeEscalation: false`
     * `readOnlyRootFilesystem: true` (with writable `/tmp` and `/app/backend/data` emptyDir/PVC)
@@ -93,7 +99,7 @@ This document establishes the security posture and threat model for the Multi-Te
     * `seccompProfile.type: RuntimeDefault`
 * **Threat E2: ServiceAccount Token Abuse**
   * *Attack*: An attacker extracts `/var/run/secrets/kubernetes.io/serviceaccount/token` to query the K8s API.
-  * *Mitigation*: `automountServiceAccountToken: false` is configured on all tenant OpenWebUI pods.
+  * *Mitigation*: `automountServiceAccountToken: false` is configured on all tenant pods.
 
 ---
 
@@ -101,9 +107,9 @@ This document establishes the security posture and threat model for the Multi-Te
 
 ```
 Layer 1: Edge / Ingress       -> TLS termination, Subdomain routing, WAF rate limiting
-Layer 2: Network Layer        -> Calico/Cilium NetworkPolicy (Default Deny, No Inter-Tenant, No Metadata)
-Layer 3: Pod Security         -> Non-root (UID 1000), Drop ALL caps, Read-only root, No K8s API token
+Layer 2: Network Isolation    -> Zero-Trust NetworkPolicy (No Inter-Tenant Traffic, No Cloud Metadata)
+Layer 3: Pod Security         -> Non-root (UID 1000), Drop ALL caps, No K8s API token
 Layer 4: Storage Isolation    -> Dedicated RWO PersistentVolumeClaim per tenant, No shared volumes
-Layer 5: Application Gateway  -> LiteLLM Proxy, Virtual Keys, Hard Budget Enforcement, Rate Limiting
-Layer 6: Upstream Providers   -> Provider keys isolated in Gateway control plane, encrypted at rest
+Layer 5: Local Gateway        -> Dedicated LiteLLM Proxy, Local Rate Limiting & Hard Budget Enforcement
+Layer 6: Credential Boundary  -> BYOK / Tenant-Scoped Provider Keys isolated inside namespace secrets
 ```
