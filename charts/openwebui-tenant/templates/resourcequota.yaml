@@ -1,0 +1,18 @@
+{{- if .Values.resourceQuota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: openwebui-tenant-quota
+  labels:
+    app.kubernetes.io/part-of: openwebui-tenant
+    saas.platform.io/tenant-id: {{ .Values.tenant.id | quote }}
+spec:
+  hard:
+    requests.cpu: {{ .Values.resourceQuota.requestsCpu | quote }}
+    requests.memory: {{ .Values.resourceQuota.requestsMemory | quote }}
+    limits.cpu: {{ .Values.resourceQuota.limitsCpu | quote }}
+    limits.memory: {{ .Values.resourceQuota.limitsMemory | quote }}
+    requests.storage: {{ .Values.resourceQuota.requestsStorage | quote }}
+    persistentvolumeclaims: {{ .Values.resourceQuota.pvcCount | quote }}
+    pods: {{ .Values.resourceQuota.podsCount | quote }}
+{{- end }}

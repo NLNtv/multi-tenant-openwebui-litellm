@@ -1,0 +1,18 @@
+{{- if .Values.limitRange.enabled }}
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: openwebui-tenant-limitrange
+  labels:
+    app.kubernetes.io/part-of: openwebui-tenant
+    saas.platform.io/tenant-id: {{ .Values.tenant.id | quote }}
+spec:
+  limits:
+    - default:
+        cpu: {{ .Values.limitRange.defaultLimitCpu | quote }}
+        memory: {{ .Values.limitRange.defaultLimitMemory | quote }}
+      defaultRequest:
+        cpu: {{ .Values.limitRange.defaultRequestCpu | quote }}
+        memory: {{ .Values.limitRange.defaultRequestMemory | quote }}
+      type: Container
+{{- end }}

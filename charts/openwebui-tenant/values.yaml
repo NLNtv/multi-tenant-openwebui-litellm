@@ -1,0 +1,120 @@
+# Default values for openwebui-tenant.
+# Deployed into an isolated namespace: tenant-<tenant.id>
+
+tenant:
+  id: "acme-corp"
+  name: "Acme Corporation"
+  subdomain: "acme"
+  baseDomain: "ai.saasdomain.com"
+
+image:
+  repository: ghcr.io/open-webui/open-webui
+  tag: "main"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+branding:
+  webuiName: "Acme Corp AI Workspace"
+  customLogoUrl: ""
+  customCss: |
+    :root {
+      --brand-primary: #1e3a8a;
+      --brand-accent: #3b82f6;
+    }
+  defaultModels: "gpt-4o"
+  modelFilter: "gpt-4o,gpt-4o-mini,claude-3-5-sonnet,claude-3-haiku"
+  enableModelFilter: true
+
+# Central LiteLLM Gateway Connection
+llmGateway:
+  endpoint: "http://litellm.litellm.svc.cluster.local:4000/v1"
+  # Injected during provisioning via CLI or Secret
+  virtualApiKey: "sk-tenant-placeholder-key"
+
+# Enterprise Directory Authentication (LDAPS / Active Directory)
+ldap:
+  enabled: true
+  serverLabel: "Corporate Active Directory"
+  serverHost: "ldaps.acme.com"
+  serverPort: 636
+  useTls: true
+  validateCert: true
+  searchBase: "OU=Users,OU=AcmeCorp,DC=acme,DC=com"
+  appDn: "CN=svc-openwebui,OU=Services,DC=acme,DC=com"
+  appPassword: "ChangeMeEnterpriseLdapSecret!"
+  attributeForUsername: "sAMAccountName"
+  searchFilters: "(&(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+  caCert: "" # Optional PEM encoded CA Certificate
+
+# Administrative Fallback / Initial Workspace Setup
+admin:
+  fallbackEnabled: true
+  email: "admin@acme.com"
+  password: "InitialAdminPassword123!"
+  webuiSecretKey: "generate-a-secure-random-token-here"
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+podSecurityContext:
+  fsGroup: 1000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  tls:
+    secretName: "" # Defaults to {{ .Values.tenant.id }}-tls
+
+networkPolicy:
+  enabled: true
+  ingressNamespace: "ingress-nginx"
+  gatewayNamespace: "litellm"
+  gatewayPort: 4000
+  # Outbound CIDR / IP for corporate LDAPS
+  ldapServerCidr: "0.0.0.0/0"
+  ldapServerPort: 636
+
+resourceQuota:
+  enabled: true
+  requestsCpu: "2"
+  requestsMemory: "4Gi"
+  limitsCpu: "4"
+  limitsMemory: "8Gi"
+  requestsStorage: "20Gi"
+  pvcCount: "2"
+  podsCount: "4"
+
+limitRange:
+  enabled: true
+  defaultRequestCpu: "100m"
+  defaultRequestMemory: "256Mi"
+  defaultLimitCpu: "1000m"
+  defaultLimitMemory: "1Gi"

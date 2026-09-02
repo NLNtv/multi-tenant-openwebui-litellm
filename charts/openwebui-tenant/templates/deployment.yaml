@@ -1,0 +1,181 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui
+  labels:
+    app.kubernetes.io/name: openwebui
+    app.kubernetes.io/part-of: openwebui-tenant
+    saas.platform.io/tenant-id: {{ .Values.tenant.id | quote }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openwebui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openwebui
+        app.kubernetes.io/part-of: openwebui-tenant
+        saas.platform.io/tenant-id: {{ .Values.tenant.id | quote }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-branding.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret-credentials.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: openwebui
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DATA_DIR
+              value: "/app/backend/data"
+            - name: WEBUI_AUTH
+              value: "true"
+            - name: ENABLE_OPENAI_API
+              value: "true"
+            - name: ENABLE_OLLAMA_API
+              value: "false"
+            - name: OPENAI_API_BASE_URL
+              value: {{ .Values.llmGateway.endpoint | quote }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openwebui-credentials
+                  key: OPENAI_API_KEY
+            - name: WEBUI_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openwebui-credentials
+                  key: WEBUI_SECRET_KEY
+            # Branding & Behavior Configuration
+            - name: WEBUI_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: openwebui-branding
+                  key: WEBUI_NAME
+            - name: WEBUI_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: openwebui-branding
+                  key: WEBUI_URL
+            - name: DEFAULT_MODELS
+              valueFrom:
+                configMapKeyRef:
+                  name: openwebui-branding
+                  key: DEFAULT_MODELS
+            - name: MODEL_FILTER_LIST
+              valueFrom:
+                configMapKeyRef:
+                  name: openwebui-branding
+                  key: MODEL_FILTER_LIST
+            - name: ENABLE_MODEL_FILTER
+              valueFrom:
+                configMapKeyRef:
+                  name: openwebui-branding
+                  key: ENABLE_MODEL_FILTER
+            - name: ENABLE_SIGNUP
+              valueFrom:
+                configMapKeyRef:
+                  name: openwebui-branding
+                  key: ENABLE_SIGNUP
+            - name: ENABLE_COMMUNITY_SHARING
+              valueFrom:
+                configMapKeyRef:
+                  name: openwebui-branding
+                  key: ENABLE_COMMUNITY_SHARING
+            - name: SHOW_ADMIN_DETAILS
+              valueFrom:
+                configMapKeyRef:
+                  name: openwebui-branding
+                  key: SHOW_ADMIN_DETAILS
+            - name: ENABLE_ADMIN_EXPORT
+              valueFrom:
+                configMapKeyRef:
+                  name: openwebui-branding
+                  key: ENABLE_ADMIN_EXPORT
+            {{- if .Values.ldap.enabled }}
+            # Enterprise LDAPS Integration
+            - name: ENABLE_LDAP
+              value: "true"
+            - name: LDAP_SERVER_LABEL
+              value: {{ .Values.ldap.serverLabel | quote }}
+            - name: LDAP_SERVER_HOST
+              value: {{ .Values.ldap.serverHost | quote }}
+            - name: LDAP_SERVER_PORT
+              value: {{ .Values.ldap.serverPort | quote }}
+            - name: LDAP_USE_TLS
+              value: {{ .Values.ldap.useTls | quote }}
+            - name: LDAP_VALIDATE_CERT
+              value: {{ .Values.ldap.validateCert | quote }}
+            - name: LDAP_SEARCH_BASE
+              value: {{ .Values.ldap.searchBase | quote }}
+            - name: LDAP_APP_DN
+              value: {{ .Values.ldap.appDn | quote }}
+            - name: LDAP_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openwebui-credentials
+                  key: LDAP_APP_PASSWORD
+            - name: LDAP_ATTRIBUTE_FOR_USERNAME
+              value: {{ .Values.ldap.attributeForUsername | quote }}
+            - name: LDAP_SEARCH_FILTERS
+              value: {{ .Values.ldap.searchFilters | quote }}
+            {{- if .Values.ldap.caCert }}
+            - name: LDAP_CA_CERT_FILE
+              value: "/app/backend/certs/ldap_ca.crt"
+            {{- end }}
+            {{- end }}
+          volumeMounts:
+            - name: data-volume
+              mountPath: /app/backend/data
+            - name: branding-volume
+              mountPath: /app/backend/branding
+              readOnly: true
+            {{- if .Values.ldap.caCert }}
+            - name: ldap-ca-volume
+              mountPath: /app/backend/certs
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: openwebui-data-pvc
+        - name: branding-volume
+          configMap:
+            name: openwebui-branding
+        {{- if .Values.ldap.caCert }}
+        - name: ldap-ca-volume
+          secret:
+            secretName: openwebui-credentials
+            items:
+              - key: ldap_ca.crt
+                path: ldap_ca.crt
+        {{- end }}

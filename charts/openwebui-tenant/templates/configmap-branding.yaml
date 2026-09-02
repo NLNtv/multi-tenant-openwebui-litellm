@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openwebui-branding
+  labels:
+    app.kubernetes.io/name: openwebui
+    app.kubernetes.io/part-of: openwebui-tenant
+    saas.platform.io/tenant-id: {{ .Values.tenant.id | quote }}
+data:
+  WEBUI_NAME: {{ .Values.branding.webuiName | quote }}
+  WEBUI_URL: "https://{{ .Values.tenant.subdomain }}.{{ .Values.tenant.baseDomain }}"
+  DEFAULT_MODELS: {{ .Values.branding.defaultModels | quote }}
+  MODEL_FILTER_LIST: {{ .Values.branding.modelFilter | quote }}
+  ENABLE_MODEL_FILTER: {{ .Values.branding.enableModelFilter | quote }}
+  ENABLE_SIGNUP: "false"
+  ENABLE_COMMUNITY_SHARING: "false"
+  SHOW_ADMIN_DETAILS: "false"
+  ENABLE_ADMIN_EXPORT: "false"
+  custom.css: |
+{{ .Values.branding.customCss | indent 4 }}

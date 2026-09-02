@@ -1,0 +1,29 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openwebui-ingress
+  labels:
+    app.kubernetes.io/name: openwebui
+    app.kubernetes.io/part-of: openwebui-tenant
+    saas.platform.io/tenant-id: {{ .Values.tenant.id | quote }}
+  annotations:
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - "{{ .Values.tenant.subdomain }}.{{ .Values.tenant.baseDomain }}"
+      secretName: {{ default (printf "%s-tls" .Values.tenant.id) .Values.ingress.tls.secretName }}
+  rules:
+    - host: "{{ .Values.tenant.subdomain }}.{{ .Values.tenant.baseDomain }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openwebui
+                port:
+                  number: 8080
+{{- end }}

@@ -1,0 +1,15 @@
+apiVersion: v2
+name: openwebui-tenant
+description: Production-grade Helm chart for an isolated, branded OpenWebUI corporate tenant instance
+type: application
+version: 1.0.0
+appVersion: "0.3.10"
+keywords:
+  - openwebui
+  - multi-tenant
+  - enterprise
+  - ldap
+  - b2b-saas
+maintainers:
+  - name: Platform Engineering
+    email: platform-eng@enterprise-saas.internal
