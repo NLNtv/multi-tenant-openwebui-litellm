@@ -1,4 +1,4 @@
-# Default values for openwebui-tenant.
+# Default values for openwebui-tenant (Decentralized Per-Tenant Gateway).
 # Deployed into an isolated namespace: tenant-<tenant.id>
 
 tenant:
@@ -26,11 +26,50 @@ branding:
   modelFilter: "gpt-4o,gpt-4o-mini,claude-3-5-sonnet,claude-3-haiku"
   enableModelFilter: true
 
-# Central LiteLLM Gateway Connection
+# Dedicated Per-Tenant LiteLLM Proxy Gateway
+litellm:
+  enabled: true
+  image:
+    repository: ghcr.io/berriai/litellm
+    tag: "main-v1.40.0"
+    pullPolicy: IfNotPresent
+  port: 4000
+  masterKey: "sk-tenant-local-master-key"
+  maxBudget: 500.00
+  budgetDuration: "30d"
+  rpmLimit: 120
+  tpmLimit: 120000
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  # Upstream LLM Credentials (BYOK / Scoped Provider Keys)
+  upstreamKeys:
+    openaiApiKey: ""
+    anthropicApiKey: ""
+    azureOpenaiApiKey: ""
+    azureOpenaiEndpoint: ""
+    awsAccessKeyId: ""
+    awsSecretAccessKey: ""
+    awsRegionName: "us-east-1"
+  # Permitted Models for this Tenant
+  models:
+    - name: "gpt-4o"
+      model: "openai/gpt-4o"
+    - name: "gpt-4o-mini"
+      model: "openai/gpt-4o-mini"
+    - name: "claude-3-5-sonnet"
+      model: "anthropic/claude-3-5-sonnet-20241022"
+  fallbacks:
+    gpt-4o:
+      - "claude-3-5-sonnet"
+
+# Legacy or External Gateway Endpoint (defaults to local LiteLLM service)
 llmGateway:
-  endpoint: "http://litellm.litellm.svc.cluster.local:4000/v1"
-  # Injected during provisioning via CLI or Secret
-  virtualApiKey: "sk-tenant-placeholder-key"
+  endpoint: "http://litellm:4000/v1"
 
 # Enterprise Directory Authentication (LDAPS / Active Directory)
 ldap:
@@ -96,8 +135,6 @@ ingress:
 networkPolicy:
   enabled: true
   ingressNamespace: "ingress-nginx"
-  gatewayNamespace: "litellm"
-  gatewayPort: 4000
   # Outbound CIDR / IP for corporate LDAPS
   ldapServerCidr: "0.0.0.0/0"
   ldapServerPort: 636

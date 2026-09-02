@@ -1,14 +1,16 @@
 apiVersion: v2
 name: openwebui-tenant
-description: Production-grade Helm chart for an isolated, branded OpenWebUI corporate tenant instance
+description: Production-grade Helm chart for an isolated corporate tenant workspace with OpenWebUI and dedicated LiteLLM proxy
 type: application
-version: 1.0.0
+version: 2.0.0
 appVersion: "0.3.10"
 keywords:
   - openwebui
+  - litellm
   - multi-tenant
   - enterprise
   - ldap
+  - byok
   - b2b-saas
 maintainers:
   - name: Platform Engineering

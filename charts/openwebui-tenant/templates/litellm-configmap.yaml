@@ -1,0 +1,38 @@
+{{- if .Values.litellm.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openwebui-litellm-config
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/part-of: openwebui-tenant
+    saas.platform.io/tenant-id: {{ .Values.tenant.id | quote }}
+data:
+  config.yaml: |
+    model_list:
+      {{- range .Values.litellm.models }}
+      - model_name: {{ .name }}
+        litellm_params:
+          model: {{ .model }}
+          rpm: {{ $.Values.litellm.rpmLimit }}
+          tpm: {{ $.Values.litellm.tpmLimit }}
+      {{- end }}
+
+    litellm_settings:
+      drop_params: true
+      set_verbose: false
+      max_budget: {{ .Values.litellm.maxBudget }}
+      budget_duration: {{ .Values.litellm.budgetDuration | quote }}
+      {{- if .Values.litellm.fallbacks }}
+      fallbacks:
+        {{- range $k, $v := .Values.litellm.fallbacks }}
+        - {{ $k }}:
+          {{- range $v }}
+          - {{ . }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+
+    general_settings:
+      master_key: "os.environ/LITELLM_MASTER_KEY"
+{{- end }}

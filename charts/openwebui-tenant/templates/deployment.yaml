@@ -43,13 +43,14 @@ spec:
               value: "true"
             - name: ENABLE_OLLAMA_API
               value: "false"
+            # Connect to dedicated in-namespace LiteLLM Proxy
             - name: OPENAI_API_BASE_URL
-              value: {{ .Values.llmGateway.endpoint | quote }}
+              value: {{ .Values.llmGateway.endpoint | default "http://litellm:4000/v1" | quote }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: openwebui-credentials
-                  key: OPENAI_API_KEY
+                  key: LITELLM_MASTER_KEY
             - name: WEBUI_SECRET_KEY
               valueFrom:
                 secretKeyRef:

@@ -37,18 +37,15 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # 2. Allow egress to Central LiteLLM Gateway in litellm namespace
+    # 2. Allow egress to dedicated in-namespace LiteLLM Proxy on port 4000
     - to:
-        - namespaceSelector:
+        - podSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.gatewayNamespace }}
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: litellm-proxy
+              app.kubernetes.io/name: litellm
       ports:
         - protocol: TCP
-          port: {{ .Values.networkPolicy.gatewayPort }}
-    # 3. Allow egress to Tenant LDAPS / Active Directory Directory Server
+          port: 4000
+    # 3. Allow egress to Tenant LDAPS / Active Directory Server
     {{- if .Values.ldap.enabled }}
     - to:
         - ipBlock:
@@ -59,4 +56,55 @@ spec:
         - protocol: TCP
           port: {{ .Values.ldap.serverPort }}
     {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: litellm-zero-trust-netpol
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/part-of: openwebui-tenant
+    saas.platform.io/tenant-id: {{ .Values.tenant.id | quote }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 1. Allow inference requests on port 4000 ONLY from local OpenWebUI pod in this namespace
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openwebui
+      ports:
+        - protocol: TCP
+          port: 4000
+  egress:
+    # 1. Allow DNS resolution to CoreDNS in kube-system
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. Allow outbound HTTPS (port 443) to external Cloud LLM Providers (OpenAI, Anthropic, Bedrock, Azure)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32 # Block Cloud Metadata Service (SSRF)
+              - 10.0.0.0/8         # Block internal private cluster networks
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
 {{- end }}
