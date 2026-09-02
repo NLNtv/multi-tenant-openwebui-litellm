@@ -1,0 +1,67 @@
+graph TD
+    subgraph Internet ["Public Internet"]
+        ClientUser["Corporate Client Browser"]
+        UpstreamOpenAI["OpenAI API (api.openai.com:443)"]
+        UpstreamAnthropic["Anthropic API (api.anthropic.com:443)"]
+        CorporateLDAP["Corporate Active Directory (ldaps.corp.acme.com:636)"]
+    end
+
+    subgraph K8sCluster ["Kubernetes Cluster Boundary"]
+        subgraph IngressNS ["Namespace: ingress-nginx"]
+            IngressCtrl["Ingress-Nginx Controller (LoadBalancer :443)"]
+        end
+
+        subgraph TenantA ["Namespace: tenant-acme (NetworkPolicy Restricted)"]
+            PodA["OpenWebUI Pod (Acme)<br/>RunAsUser: 1000<br/>automountServiceAccount: false"]
+            PVCA[("Dedicated PVC<br/>(webui.db / docs)")]
+            PodA --- PVCA
+        end
+
+        subgraph TenantB ["Namespace: tenant-globex (NetworkPolicy Restricted)"]
+            PodB["OpenWebUI Pod (Globex)<br/>RunAsUser: 1000<br/>automountServiceAccount: false"]
+            PVCB[("Dedicated PVC<br/>(webui.db / docs)")]
+            PodB --- PVCB
+        end
+
+        subgraph GatewayNS ["Namespace: litellm (Control Plane)"]
+            LiteLLMProxy["LiteLLM Proxy Deployment<br/>ClusterIP: litellm.litellm.svc:4000"]
+            LiteLLMPG[("PostgreSQL DB<br/>(Keys, Spend, Logs)")]
+            LiteLLMRedis[("Redis Cache<br/>(RPM/TPM Limits)")]
+            LiteLLMProxy --- LiteLLMPG
+            LiteLLMProxy --- LiteLLMRedis
+        end
+
+        subgraph KubeSystem ["Namespace: kube-system"]
+            CoreDNS["CoreDNS (53 UDP/TCP)"]
+        end
+    end
+
+    %% Ingress Flow
+    ClientUser -->|HTTPS 443| IngressCtrl
+    IngressCtrl -->|HTTP 8080 acme.ai.saas.com| PodA
+    IngressCtrl -->|HTTP 8080 globex.ai.saas.com| PodB
+
+    %% Tenant Egress Flows
+    PodA -->|Port 4000 Virtual Key A| LiteLLMProxy
+    PodB -->|Port 4000 Virtual Key B| LiteLLMProxy
+    PodA -->|Port 636 LDAPS TLS| CorporateLDAP
+    PodA -->|Port 53 DNS| CoreDNS
+    PodB -->|Port 53 DNS| CoreDNS
+
+    %% Gateway Egress Flows
+    LiteLLMProxy -->|HTTPS 443 Master Key| UpstreamOpenAI
+    LiteLLMProxy -->|HTTPS 443 Master Key| UpstreamAnthropic
+
+    %% Blocked Traffic Indicators (Zero Trust)
+    PodA -.->|BLOCKED: Cross-Tenant Denied| PodB
+    PodB -.->|BLOCKED: Cross-Tenant Denied| PodA
+    PodA -.->|BLOCKED: Direct Internet Denied| UpstreamOpenAI
+    PodA -.->|BLOCKED: Metadata 169.254.169.254 Denied| Internet
+
+    classDef allowed stroke:#2ecc71,stroke-width:2px,fill:#e8f8f5;
+    classDef blocked stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5,fill:#fadbd8;
+    classDef gateway stroke:#3498db,stroke-width:2px,fill:#ebf5fb;
+    classDef tenant stroke:#9b59b6,stroke-width:2px,fill:#f5eef8;
+
+    class LiteLLMProxy,LiteLLMPG,LiteLLMRedis gateway;
+    class PodA,PodB tenant;

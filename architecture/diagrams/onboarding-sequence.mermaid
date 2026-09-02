@@ -1,0 +1,60 @@
+sequenceDiagram
+    autonumber
+    actor Admin as SRE / Platform Admin
+    participant CLI as tenant-manager CLI
+    participant Validator as Pre-Flight Validator
+    participant TxManager as Transaction Manager
+    participant LiteLLM as LiteLLM Admin API
+    participant K8s as Kubernetes API Server
+    participant Cluster as Tenant Pods & Ingress
+
+    Admin->>CLI: tenant-manager provision tenants/examples/acme-corp.yaml
+    CLI->>Validator: Validate Schema, DNS, Budget & LDAPS Syntax
+    alt Validation Failure
+        Validator-->>CLI: Validation Error (e.g. invalid subdomain format)
+        CLI-->>Admin: Abort with error message
+    else Validation Success
+        Validator-->>CLI: Spec Validated OK
+        CLI->>TxManager: Begin Provisioning Transaction (tenant-acme)
+        
+        Note over TxManager, LiteLLM: Step 1: Provision Virtual Key
+        TxManager->>LiteLLM: POST /key/generate<br/>{models, max_budget: 500, rpm_limit: 100, metadata}
+        alt LiteLLM Error
+            LiteLLM-->>TxManager: 500 Internal Error
+            TxManager-->>CLI: Fail & Rollback (No resources to clean)
+            CLI-->>Admin: Provisioning Aborted
+        else Key Created
+            LiteLLM-->>TxManager: Key Created: "sk-tenant-acme-prod-abc123"
+            TxManager->>TxManager: Register Compensation Action: delete_key("sk-tenant-acme-...")
+            
+            Note over TxManager, K8s: Step 2: Provision Kubernetes Resources
+            TxManager->>K8s: Create Namespace: tenant-acme
+            TxManager->>TxManager: Register Compensation Action: delete_namespace("tenant-acme")
+            
+            TxManager->>K8s: Apply ResourceQuota & LimitRange
+            TxManager->>K8s: Apply Secrets (LiteLLM Virtual Key + LDAPS Credentials)
+            TxManager->>K8s: Apply ConfigMaps (Branding & UI Settings)
+            TxManager->>K8s: Apply PersistentVolumeClaim (openwebui-data-pvc)
+            TxManager->>K8s: Apply NetworkPolicy (Zero-Trust Rules)
+            TxManager->>K8s: Apply Deployment & Service
+            TxManager->>K8s: Apply Ingress (acme.ai.saas.com)
+
+            Note over TxManager, Cluster: Step 3: Health Verification
+            TxManager->>Cluster: Poll Deployment Rollout Readiness (Timeout: 180s)
+            alt Pod CrashLoopBackOff / Rollout Timeout
+                Cluster-->>TxManager: Readiness Timeout
+                Note over TxManager, LiteLLM: Rollback Execution
+                TxManager->>K8s: Delete Namespace tenant-acme
+                TxManager->>LiteLLM: Revoke Virtual Key (DELETE /key/delete)
+                TxManager-->>CLI: Transaction Rolled Back
+                CLI-->>Admin: Provisioning Failed: Rollback Completed
+            else Pods Ready & Passing Probes
+                Cluster-->>TxManager: Pod Ready (1/1 Running)
+                TxManager->>LiteLLM: Test Synthetic Ping with Tenant Key
+                LiteLLM-->>TxManager: 200 OK
+                TxManager->>TxManager: Commit Transaction
+                TxManager-->>CLI: Tenant Successfully Onboarded
+                CLI-->>Admin: Success: https://acme.ai.saas.com ready!
+            end
+        end
+    end
