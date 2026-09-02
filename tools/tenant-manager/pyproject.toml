@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tenant-manager"
+version = "1.0.0"
+description = "Enterprise Multi-Tenant Orchestration and Governance Engine for OpenWebUI and LiteLLM"
+authors = [
+    { name = "Platform Engineering", email = "platform-eng@enterprise-saas.internal" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+tenant-manager = "tenant_manager.cli:main"
