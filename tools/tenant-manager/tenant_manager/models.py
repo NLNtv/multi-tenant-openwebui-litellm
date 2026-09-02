@@ -117,6 +117,17 @@ class GovernanceConfig(BaseModel):
         return v
 
 
+class UpstreamCredentialsConfig(BaseModel):
+    """Credentials for tenant-specific or BYOK upstream model providers."""
+    openai_api_key: Optional[str] = Field(default="", alias="openaiApiKey")
+    anthropic_api_key: Optional[str] = Field(default="", alias="anthropicApiKey")
+    azure_openai_api_key: Optional[str] = Field(default="", alias="azureOpenaiApiKey")
+    azure_openai_endpoint: Optional[str] = Field(default="", alias="azureOpenaiEndpoint")
+    aws_access_key_id: Optional[str] = Field(default="", alias="awsAccessKeyId")
+    aws_secret_access_key: Optional[str] = Field(default="", alias="awsSecretAccessKey")
+    aws_region_name: Optional[str] = Field(default="us-east-1", alias="awsRegionName")
+
+
 class BrandingConfig(BaseModel):
     portal_title: str = Field(
         ...,
@@ -239,6 +250,10 @@ class TenantSpecification(BaseModel):
     governance: GovernanceConfig
     branding: BrandingConfig
     identity: IdentityConfig
+    upstream_credentials: UpstreamCredentialsConfig = Field(
+        default_factory=UpstreamCredentialsConfig,
+        alias="upstreamCredentials"
+    )
     admin_fallback: AdminFallbackConfig = Field(
         default_factory=lambda: AdminFallbackConfig(
             email="admin@tenant.local",
