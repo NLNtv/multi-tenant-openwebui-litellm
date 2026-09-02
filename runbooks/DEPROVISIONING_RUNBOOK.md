@@ -1,7 +1,7 @@
 # Operational Runbook: Tenant Deprovisioning & Offboarding
 
 ## Purpose
-This runbook establishes standard operating procedures for gracefully deprovisioning a corporate tenant, permanently revoking LLM gateway keys, enforcing GDPR / SOC2 data retention or disposal, and safely reclaiming Kubernetes cluster resources.
+This runbook establishes standard operating procedures for gracefully deprovisioning a corporate tenant, tearing down the dedicated tenant namespace (OpenWebUI + local LiteLLM proxy), enforcing GDPR / SOC2 data retention or disposal, and safely reclaiming Kubernetes cluster resources.
 
 ---
 
@@ -42,43 +42,34 @@ kubectl get volumesnapshot -n tenant-acme-corp acme-corp-final-snapshot
 Run the `tenant-manager deprovision` command:
 
 ```bash
-python -m tenant_manager.cli deprovision acme-corp \
-  --litellm-url "http://litellm.litellm.svc.cluster.local:4000" \
-  --master-key "$LITELLM_MASTER_KEY"
+python -m tenant_manager.cli deprovision acme-corp
 ```
 
 ### What Happens Automatically:
-1. **Immediate Gateway Revocation**:
-   * The tenant's Virtual Key (`sk-tenant-acme-...`) is deleted from LiteLLM Proxy.
-   * Any pending or in-flight user chat requests are immediately terminated with HTTP 401 Unauthorized. Upstream LLM token costs stop instantly.
-2. **Kubernetes Namespace Teardown**:
+1. **Total Namespace Teardown**:
    * The namespace `tenant-acme-corp` is deleted.
-   * Kubernetes terminates all OpenWebUI pods, deletes the Ingress routing rules, removes Secrets and ConfigMaps, and deletes the PVC.
-3. **Registry Update**:
+   * Kubernetes terminates all OpenWebUI pods and dedicated LiteLLM pods.
+   * The localized secrets (including any BYOK credentials) are permanently destroyed.
+   * Ingress routing rules are purged from the ingress controller.
+   * The PVC is released and reclaimed according to storage class policy.
+2. **Registry Update**:
    * The tenant record is removed from `tenants/active/registry.json`.
 
 ---
 
 ## 4. Post-Deprovisioning Audit & Verification
 
-1. **Verify Key Revocation in LiteLLM**:
-   ```bash
-   curl -s -X GET "http://litellm:4000/key/info?key=sk-tenant-acme-prod" \
-     -H "Authorization: Bearer $LITELLM_MASTER_KEY"
-   # Must return 404 Key not found
-   ```
-
-2. **Verify Namespace Teardown**:
+1. **Verify Namespace Teardown**:
    ```bash
    kubectl get namespaces tenant-acme-corp
    # Must return NotFound
    ```
 
-3. **Verify Subdomain DNS & Routing**:
+2. **Verify Subdomain DNS & Routing**:
    ```bash
    curl -Iv https://acme.ai.saasdomain.com
    # Must return 404 Not Found from Ingress Controller
    ```
 
-4. **Sign Off Offboarding Ticket**:
+3. **Sign Off Offboarding Ticket**:
    Record timestamp, deprovisioning log, and snapshot ID in the compliance audit ticket.

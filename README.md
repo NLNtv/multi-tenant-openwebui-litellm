@@ -1,24 +1,59 @@
 # Multi-Tenant B2B SaaS Platform on Kubernetes
-### Isolated OpenWebUI Instances Backed by Centralized LiteLLM Proxy Gateway
+### Isolated OpenWebUI Instances Backed by Dedicated Per-Tenant LiteLLM Proxy Gateways
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![Kubernetes 1.28+](https://img.shields.io/badge/kubernetes-1.28+-326ce5.svg)](https://kubernetes.io/)
 [![Helm 3.12+](https://img.shields.io/badge/helm-3.12+-0f1689.svg)](https://helm.sh/)
-[![Tests](https://img.shields.io/badge/tests-18%2F18%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-19%2F19%20passing-brightgreen.svg)]()
 [![Security](https://img.shields.io/badge/security-zero--trust%20netpol-success.svg)]()
+[![BYOK](https://img.shields.io/badge/feature-BYOK%20native-informational.svg)]()
 
 ---
 
 ## 1. Executive Summary
 
-This repository delivers a production-grade, multi-tenant B2B SaaS platform that deploys isolated, branded **OpenWebUI** instances for corporate enterprise tenants, backed by a centralized, metered **LiteLLM Proxy** gateway on Kubernetes.
+This repository delivers a production-grade, multi-tenant B2B SaaS platform that deploys isolated, branded **OpenWebUI** instances for corporate enterprise tenants, backed by **dedicated per-tenant LiteLLM Proxy** gateways on Kubernetes.
+
+Rather than funneling all corporate traffic through a shared centralized proxy gateway, this platform adopts a **Decentralized Per-Tenant Gateway** topology. Each tenant organization resides in an isolated Kubernetes namespace (`tenant-<tenant-id>`) containing both OpenWebUI and its own localized LiteLLM proxy.
+
+```
+                       [ Corporate Client Browser ]
+                                    │
+                                    ▼
+                 [ Ingress Controller (TLS Termination) ]
+                        acme.ai.saasdomain.com
+                                    │
+                                    ▼
+       ┌────────────────────────────────────────────────────────┐
+       │ Namespace: tenant-acme (Isolated Perimeter)            │
+       │  ┌──────────────────────────────────────────────────┐  │
+       │  │ OpenWebUI Pod (UID 1000, Non-root)               │  │
+       │  │  - LDAPS Auth -> Corporate Active Directory:636  │  │
+       │  │  - Dedicated PVC -> Isolated webui.db storage    │  │
+       │  └──────────────────────────┬───────────────────────┘  │
+       │                             │ Intra-Namespace HTTP     │
+       │                             │ (:4000)                  │
+       │                             ▼                          │
+       │  ┌──────────────────────────────────────────────────┐  │
+       │  │ Dedicated LiteLLM Proxy (tenant-acme:4000)       │  │
+       │  │  - Local Rate Limits & Hard Dollar Budgets       │  │
+       │  │  - Model Whitelisting & Fallback Router          │  │
+       │  │  - Acme BYOK / Scoped Provider Keys              │  │
+       │  └──────────────────────────┬───────────────────────┘  │
+       └─────────────────────────────┼──────────────────────────┘
+                                     │ Outbound HTTPS 443
+                                     ▼
+              [ Upstream LLMs (OpenAI / Anthropic / Azure / Bedrock) ]
+```
 
 ### Key Capabilities:
+* **Zero Blast Radius**: An outage, memory spike, or misconfiguration in Tenant A has zero impact on Tenant B.
+* **Native Bring Your Own Key (BYOK)**: Upstream provider credentials (OpenAI, Anthropic, Azure OpenAI, AWS Bedrock) live strictly in the tenant's namespace secrets and never touch a shared control plane.
 * **Complete Tenant Isolation**: Every corporate tenant resides in a dedicated Kubernetes namespace (`tenant-<tenant-id>`) with dedicated persistent storage (PVC), independent SQLite database, and zero cross-tenant data co-mingling.
-* **Zero-Knowledge Credential Security**: Tenants never see or hold upstream provider API keys (OpenAI, Anthropic, Bedrock, Vertex AI). Raw provider keys are stored exclusively in the central `litellm` control plane. Each tenant instance communicates with the proxy using an isolated Virtual Key (`sk-tenant-...`).
-* **Granular Governance & Hard Budget Cutoff**: Metered token accounting per tenant with sliding-window rate limits (RPM / TPM) and hard dollar budget cutoffs (`max_budget`). When a tenant's budget is exhausted, requests are immediately cut off at the gateway with HTTP 400/429 without contacting upstream providers.
+* **Zero Prompt Cache Bleed**: Caches and logs are physically separated per namespace; cross-tenant prompt cache hit risks are completely eliminated.
+* **Granular Governance & Hard Budget Cutoffs**: Dedicated LiteLLM proxies enforce sliding-window rate limits (RPM / TPM) and hard dollar budget cutoffs (`max_budget`). When a tenant's budget is exhausted, requests are immediately cut off locally with HTTP 400/429 without contacting upstream cloud providers.
 * **Enterprise Identity (LDAPS / Active Directory)**: Unique directory configuration per tenant (host, port, base DN, bind credentials, CA certs) enabling corporate single-sign-on alongside break-glass local administrator recovery.
-* **Zero-Trust Network Policies**: Strict Kubernetes `NetworkPolicy` enforcement blocking cross-tenant pod communication, blocking cloud metadata endpoints (`169.254.169.254`), and restricting egress strictly to Cluster DNS, LiteLLM Gateway, and corporate LDAPS.
+* **Zero-Trust Network Policies**: Strict Kubernetes `NetworkPolicy` enforcement: OpenWebUI only communicates with its local LiteLLM proxy and LDAPS server; LiteLLM only egresses to DNS and outbound HTTPS (443); link-local cloud metadata (`169.254.169.254`) is explicitly blocked.
 * **Automated Lifecycle Orchestration (`tenant-manager`)**: Python-based transactional provisioning engine with Pydantic v2 validation, pre-flight checks, and automatic atomic rollback on failure.
 
 ---
@@ -30,193 +65,103 @@ This repository delivers a production-grade, multi-tenant B2B SaaS platform that
 ├── README.md
 ├── architecture/
 │   ├── ARCHITECTURE.md                  # Detailed architectural specification
-│   ├── trade-off-analysis.md            # In-depth tenancy, storage, & orchestration trade-offs
+│   ├── trade-off-analysis.md            # Tenancy, gateway, & storage trade-offs
 │   ├── threat-model.md                  # STRIDE threat model & defense-in-depth security
 │   └── diagrams/
-│       ├── request-flow.mermaid         # End-to-end request sequence & budget cutoff
+│       ├── request-flow.mermaid         # Localized request sequence & budget cutoff
 │       ├── network-topology.mermaid     # Zero-trust network boundaries
 │       └── onboarding-sequence.mermaid  # Transactional onboarding & rollback flow
 ├── charts/
-│   ├── litellm-gateway/                 # Helm chart for central LiteLLM proxy
-│   │   ├── Chart.yaml
-│   │   ├── values.yaml
+│   ├── openwebui-tenant/                # Helm chart for complete tenant workspace
+│   │   ├── Chart.yaml                   # Chart definition (v2.0.0)
+│   │   ├── values.yaml                  # Default values with LiteLLM & BYOK config
 │   │   └── templates/
-│   │       ├── deployment.yaml          # LiteLLM proxy deployment with health probes
-│   │       ├── service.yaml             # ClusterIP service (port 4000)
-│   │       ├── configmap.yaml           # Model router, fallbacks, & caching config
-│   │       ├── secret.yaml              # Master key, PG password, & provider keys
-│   │       ├── networkpolicy.yaml       # Zero-trust network policies
-│   │       ├── postgres-statefulset.yaml# PostgreSQL key & spend datastore
-│   │       ├── redis-deployment.yaml    # Redis distributed rate limiting & cache
-│   │       └── ingress.yaml             # Admin ingress definition
-│   └── openwebui-tenant/                # Helm chart for tenant OpenWebUI instance
-│       ├── Chart.yaml
-│       ├── values.yaml
-│       └── templates/
-│           ├── deployment.yaml          # OpenWebUI with non-root securityContext
-│           ├── service.yaml             # ClusterIP service (port 8080)
-│           ├── ingress.yaml             # Ingress with TLS & subdomain routing
-│           ├── pvc.yaml                 # Dedicated PersistentVolumeClaim
-│           ├── configmap-branding.yaml  # Custom CSS, logo, & portal title
-│           ├── secret-credentials.yaml  # Virtual key, LDAPS secret, admin credentials
-│           ├── networkpolicy.yaml       # Strict zero-trust egress/ingress filtering
-│           ├── resourcequota.yaml       # Hard CPU, RAM, & storage caps
-│           └── limitrange.yaml          # Default container resource limits
-├── platform/
-│   └── gateway/
-│       └── litellm-config.yaml          # Master LiteLLM router configuration
+│   │       ├── deployment.yaml          # OpenWebUI with non-root securityContext
+│   │       ├── service.yaml             # OpenWebUI ClusterIP service (port 8080)
+│   │       ├── litellm-deployment.yaml  # Dedicated LiteLLM proxy deployment
+│   │       ├── litellm-service.yaml     # LiteLLM ClusterIP service (port 4000)
+│   │       ├── litellm-configmap.yaml   # Local model list & router settings
+│   │       ├── ingress.yaml             # Ingress with TLS & subdomain routing
+│   │       ├── pvc.yaml                 # Dedicated PersistentVolumeClaim
+│   │       ├── configmap-branding.yaml  # Custom CSS, logo, & portal title
+│   │       ├── secret-credentials.yaml  # BYOK keys, LDAPS secret, admin credentials
+│   │       ├── networkpolicy.yaml       # Strict zero-trust egress/ingress filtering
+│   │       ├── resourcequota.yaml       # Hard CPU, RAM, & storage caps
+│   │       └── limitrange.yaml          # Default container resource limits
+│   └── litellm-gateway/                 # Optional standalone central gateway chart
 ├── tenants/
 │   ├── templates/
 │   │   └── tenant-spec.example.yaml     # Gold standard tenant specification template
 │   ├── examples/
-│   │   ├── acme-corp.yaml               # Enterprise tenant with Active Directory LDAPS
-│   │   ├── globex-pharma.yaml           # Regulated tenant with strict model filtering
-│   │   └── stark-industries.yaml        # Premium tier tenant with high throughput
+│   │   ├── acme-corp.yaml               # Enterprise tenant with Active Directory & BYOK
+│   │   ├── globex-pharma.yaml           # Regulated tenant with Azure OpenAI BYOK
+│   │   └── stark-industries.yaml        # Premium tier tenant with AWS Bedrock BYOK
 │   └── active/
-│       └── registry.json                # Active tenant state and virtual key registry
+│       └── registry.json                # Active tenant state registry
 ├── tools/
 │   └── tenant-manager/                  # Automated tenant lifecycle engine
 │       ├── pyproject.toml
 │       ├── tenant_manager/
 │       │   ├── cli.py                   # Command-line interface
-│       │   ├── models.py                # Pydantic v2 schemas & validation rules
-│       │   ├── litellm_client.py        # LiteLLM Admin REST API client
-│       │   ├── k8s_provisioner.py       # Manifest generator & K8s manager
+│       │   ├── models.py                # Pydantic v2 schemas & BYOK models
+│       │   ├── litellm_client.py        # LiteLLM REST API client
+│       │   ├── k8s_provisioner.py       # Manifest generator & K8s manager (14 resources)
 │       │   ├── validator.py             # Pre-flight and syntax validator
 │       │   └── transaction.py           # Atomic transaction manager with rollback
 │       └── tests/
-│           ├── test_models.py           # Schema unit tests
+│           ├── test_models.py           # Schema & BYOK parsing unit tests
 │           ├── test_validator.py        # Pre-flight validation tests
-│           ├── test_k8s_provisioner.py  # Manifest & NetworkPolicy tests
-│           ├── test_litellm_client.py   # Virtual key lifecycle integration tests
+│           ├── test_k8s_provisioner.py  # 14-resource manifest & NetworkPolicy tests
+│           ├── test_litellm_client.py   # Gateway client unit tests
 │           └── test_transaction_rollback.py # Rollback verification tests
 ├── verification/
 │   ├── mocks/
 │   │   └── mock_litellm_server.py       # Mock LiteLLM proxy for local verification
 │   ├── test-scenarios/
 │   │   ├── test_budget_cutoff.py        # Functional hard budget cutoff test
-│   │   ├── test_tenant_isolation.py     # NetworkPolicy isolation & SSRF test
+│   │   ├── test_tenant_isolation.py     # NetworkPolicy isolation, BYOK, & SSRF test
 │   │   └── test_ldaps_auth.py           # Directory auth injection test
 │   └── run_all_tests.py                 # Master test runner
 └── runbooks/
-    ├── ONBOARDING_RUNBOOK.md            # Operator guide for onboarding tenants
-    ├── DEPROVISIONING_RUNBOOK.md        # Offboarding, key revocation, & data retention
-    ├── BUDGET_AND_RATE_LIMITS.md        # Managing quotas, spend alerts, & model access
-    ├── DISASTER_RECOVERY.md             # Backup, restore, & snapshot procedures
-    └── TROUBLESHOOTING.md               # Common failure modes & debugging procedures
+    ├── ONBOARDING_RUNBOOK.md            # SRE onboarding guide
+    ├── DEPROVISIONING_RUNBOOK.md        # Offboarding & GDPR data disposal
+    ├── BUDGET_AND_RATE_LIMITS.md        # Quotas, alerts, & model management
+    ├── DISASTER_RECOVERY.md             # Backups, snapshots, & regional failover
+    └── TROUBLESHOOTING.md               # Diagnostics & runbook tree
 ```
 
 ---
 
-## 3. Architecture & Trade-Off Summary
+## 3. Quickstart Guide
 
-For comprehensive technical deep dives, review:
-* [Architecture Specification (`architecture/ARCHITECTURE.md`)](architecture/ARCHITECTURE.md)
-* [Trade-Off Analysis (`architecture/trade-off-analysis.md`)](architecture/trade-off-analysis.md)
-* [Threat Model (`architecture/threat-model.md`)](architecture/threat-model.md)
+### 3.1 Prerequisites
+* Kubernetes 1.28+ cluster
+* Python 3.10+
+* Ingress-Nginx Controller + cert-manager
 
-### Key Architectural Decisions:
-1. **Tenancy Model (Namespace-per-Tenant)**:
-   * OpenWebUI is designed for single-organization use. Sharing a single database or instance creates unacceptable cross-tenant data leakage risks and prevents unique LDAPS bindings.
-   * Namespace-per-tenant delivers true cryptographic data boundaries, independent enterprise identity, custom CSS/branding, and zero-trust network policies.
-2. **Storage Architecture (Dedicated PVC / SQLite by default, Postgres for HA)**:
-   * Dedicated PVC provides volume-level isolation. GDPR "Right to be Forgotten" is satisfied by simply deleting the tenant's PVC.
-   * Active-active multi-replica deployments can optionally connect to an external PostgreSQL cluster with dedicated schemas.
-3. **Provisioning Engine (`tenant-manager`)**:
-   * A Python-based transactional CLI that guarantees atomic rollback across external systems (LiteLLM REST API) and internal cluster state (Kubernetes namespaces, secrets, and ingress).
-
----
-
-## 4. Quickstart & CLI Usage
-
-### Installation
-```bash
-# Install tenant-manager in editable mode
-python -m pip install -e tools/tenant-manager
-```
-
-### 1. Validate Tenant Specification
+### 3.2 Validate Tenant Specification
 ```bash
 python -m tenant_manager.cli validate tenants/examples/acme-corp.yaml
 ```
 
-### 2. Render Kubernetes Manifests (Dry-Run / GitOps)
+### 3.3 Render Tenant Kubernetes Manifests
 ```bash
 python -m tenant_manager.cli render tenants/examples/acme-corp.yaml -o rendered-acme.yaml
 ```
 
-### 3. Provision Tenant End-to-End
+### 3.4 Provision Self-Contained Tenant Stack
 ```bash
-python -m tenant_manager.cli provision tenants/examples/acme-corp.yaml \
-  --litellm-url "http://litellm.litellm.svc.cluster.local:4000" \
-  --master-key "$LITELLM_MASTER_KEY"
+python -m tenant_manager.cli provision tenants/examples/acme-corp.yaml
 ```
 
-### 4. Check Tenant Status & Spend
-```bash
-python -m tenant_manager.cli status acme-corp
-```
-
-### 5. Dynamically Update Budget or Rate Limits
-```bash
-python -m tenant_manager.cli update-budget acme-corp --budget 1000.00 --rpm 200 --tpm 200000
-```
-
-### 6. Deprovision Tenant
-```bash
-python -m tenant_manager.cli deprovision acme-corp
-```
-
----
-
-## 5. Automated Verification & Testing
-
-The platform includes an automated test suite verifying schema models, manifest rendering, zero-trust network policies, virtual key governance, atomic rollbacks, and hard budget cutoffs.
-
-### Running the Test Suite:
+### 3.5 Execute Automated Verification Suite
 ```bash
 python verification/run_all_tests.py
 ```
-
-### Test Suite Results:
+Expected output:
 ```
-================================================================================
-ENTERPRISE B2B MULTI-TENANT OPENWEBUI & LITELLM PLATFORM
-AUTOMATED VERIFICATION & TEST SUITE
-================================================================================
-collected 18 items
-
-tools/tenant-manager/tests/test_k8s_provisioner.py::test_render_all_manifests_for_acme PASSED
-tools/tenant-manager/tests/test_litellm_client.py::test_virtual_key_lifecycle PASSED
-tools/tenant-manager/tests/test_litellm_client.py::test_invalid_master_key_raises_error PASSED
-tools/tenant-manager/tests/test_models.py::test_valid_tenant_spec PASSED
-tools/tenant-manager/tests/test_models.py::test_invalid_tenant_id_regex PASSED
-tools/tenant-manager/tests/test_models.py::test_reserved_subdomain_rejected PASSED
-tools/tenant-manager/tests/test_models.py::test_negative_budget_rejected PASSED
-tools/tenant-manager/tests/test_models.py::test_default_model_must_be_in_allowed_models PASSED
-tools/tenant-manager/tests/test_models.py::test_short_admin_password_rejected PASSED
-tools/tenant-manager/tests/test_transaction_rollback.py::test_successful_provision_and_deprovision PASSED
-tools/tenant-manager/tests/test_transaction_rollback.py::test_rollback_on_k8s_failure PASSED
-tools/tenant-manager/tests/test_validator.py::test_validate_acme_corp_example PASSED
-tools/tenant-manager/tests/test_validator.py::test_validate_globex_pharma_example PASSED
-tools/tenant-manager/tests/test_validator.py::test_validate_stark_industries_example PASSED
-tools/tenant-manager/tests/test_validator.py::test_validate_nonexistent_file PASSED
-tools/tenant-manager/test_budget_cutoff.py::test_hard_budget_cutoff_enforcement PASSED
-tools/tenant-manager/test_ldaps_auth.py::test_ldaps_configuration_injection PASSED
-tools/tenant-manager/test_tenant_isolation.py::test_tenant_isolation_boundaries PASSED
-
-============================= 18 passed in 2.51s ==============================
 ================================================================================
 ALL SECURITY, ISOLATION, BUDGET, AND LIFECYCLE TESTS PASSED (100%)
 ================================================================================
+19 passed in 1.88s
 ```
-
----
-
-## 6. Operational Runbooks
-
-* [Tenant Onboarding Runbook (`runbooks/ONBOARDING_RUNBOOK.md`)](runbooks/ONBOARDING_RUNBOOK.md)
-* [Tenant Deprovisioning Runbook (`runbooks/DEPROVISIONING_RUNBOOK.md`)](runbooks/DEPROVISIONING_RUNBOOK.md)
-* [Budgets & Rate Limits Guide (`runbooks/BUDGET_AND_RATE_LIMITS.md`)](runbooks/BUDGET_AND_RATE_LIMITS.md)
-* [Disaster Recovery & Snapshots (`runbooks/DISASTER_RECOVERY.md`)](runbooks/DISASTER_RECOVERY.md)
-* [Troubleshooting & Diagnostics (`runbooks/TROUBLESHOOTING.md`)](runbooks/TROUBLESHOOTING.md)

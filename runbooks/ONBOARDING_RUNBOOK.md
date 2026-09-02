@@ -1,7 +1,7 @@
-# Operational Runbook: Tenant Onboarding
+# Operational Runbook: Tenant Onboarding (Decentralized Per-Tenant Gateway)
 
 ## Purpose
-This runbook guides Site Reliability Engineers (SREs) and Platform Operators through onboarding a new corporate client onto the multi-tenant OpenWebUI SaaS platform.
+This runbook guides Site Reliability Engineers (SREs) and Platform Operators through onboarding a new corporate client onto the multi-tenant OpenWebUI SaaS platform featuring dedicated per-tenant LiteLLM gateways and BYOK support.
 
 ---
 
@@ -13,8 +13,9 @@ Before beginning onboarding, collect the following enterprise tenant specificati
 | :--- | :--- | :--- |
 | **Tenant ID** | Lowercase alphanumeric slug (RFC 1123) | `acme-corp` |
 | **Subdomain** | Desired subdomain prefix | `acme` $\to$ `acme.ai.saasdomain.com` |
-| **Budget & Quota** | Monthly dollar cap and rate limits | \$500.00 / 30d, 120 RPM, 100k TPM |
+| **Budget & Quota** | Monthly dollar cap and rate limits | \$500.00 / 30d, 120 RPM, 120k TPM |
 | **Model Whitelist** | Models contracted by tenant | `gpt-4o`, `claude-3-5-sonnet` |
+| **Upstream Keys (BYOK)** | Corporate OpenAI, Anthropic, or Azure keys | `sk-proj-acme-...` |
 | **LDAPS Host & Port** | Corporate directory endpoint | `ldaps.corp.acme.com:636` |
 | **LDAP Bind DN & Pass**| Service account for LDAP search queries | `CN=svc-ai,OU=Services,DC=acme,DC=com` |
 | **LDAP User Search Base**| Directory OU containing permitted users | `OU=Users,DC=acme,DC=com` |
@@ -68,6 +69,10 @@ governance:
     - "claude-3-5-sonnet"
     - "text-embedding-3-small"
 
+upstreamCredentials:
+  openaiApiKey: "sk-proj-acme-corp-private-key-2026"
+  anthropicApiKey: "sk-ant-acme-corp-private-key-2026"
+
 branding:
   portalTitle: "Acme Corp AI Workspace"
   defaultModel: "gpt-4o"
@@ -114,15 +119,17 @@ Expected output:
 
 ### Step 4.2: Execute Provisioning with Transaction Manager
 ```bash
-python -m tenant_manager.cli provision tenants/active/acme-corp.yaml \
-  --litellm-url "http://litellm.litellm.svc.cluster.local:4000" \
-  --master-key "$LITELLM_MASTER_KEY"
+python -m tenant_manager.cli provision tenants/active/acme-corp.yaml
 ```
 
-The CLI executes the three-phase atomic transaction:
-1. Provisions the tenant's isolated Virtual Key (`sk-tenant-acme-...`) in LiteLLM with budget (\$500.00) and model whitelist.
-2. Creates Kubernetes namespace `tenant-acme-corp`, applying ResourceQuota, LimitRange, Secret, ConfigMap, PVC, Zero-Trust NetworkPolicy, Deployment, Service, and Ingress.
-3. Records tenant status in `tenants/active/registry.json`.
+The CLI executes atomic provisioning of the entire tenant stack:
+1. Creates Kubernetes namespace `tenant-acme-corp`.
+2. Applies ResourceQuota, LimitRange, Secret (with BYOK credentials), OpenWebUI Branding ConfigMap, LiteLLM ConfigMap, and Dedicated PVC.
+3. Applies Dedicated LiteLLM Deployment (`litellm:4000`) and Service.
+4. Applies OpenWebUI Deployment (`openwebui:8080`) and Service.
+5. Applies Zero-Trust NetworkPolicies for both OpenWebUI and LiteLLM.
+6. Applies Ingress with automated cert-manager TLS.
+7. Records tenant status in `tenants/active/registry.json`.
 
 ---
 
@@ -130,9 +137,9 @@ The CLI executes the three-phase atomic transaction:
 
 1. **Verify Pod Status**:
    ```bash
-   kubectl get pods -n tenant-acme-corp -l app.kubernetes.io/name=openwebui
+   kubectl get pods -n tenant-acme-corp
    ```
-   Status must reach `1/1 Running`.
+   Both `openwebui` and `litellm` pods must reach `1/1 Running`.
 
 2. **Verify Ingress & TLS**:
    ```bash
@@ -141,12 +148,7 @@ The CLI executes the three-phase atomic transaction:
    ```
    HTTP response must be `200 OK`.
 
-3. **Verify Governance in LiteLLM**:
-   ```bash
-   python -m tenant_manager.cli status acme-corp
-   ```
-
-4. **Verify Tenant Isolation**:
+3. **Verify Zero-Trust Isolation**:
    Confirm that the tenant pod cannot ping or query neighboring namespaces:
    ```bash
    kubectl exec -it deployment/openwebui -n tenant-acme-corp -- curl -m 3 http://openwebui.tenant-globex:8080
