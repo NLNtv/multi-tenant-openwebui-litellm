@@ -1,7 +1,7 @@
 """
 Verification Test Scenario: Tenant Isolation & Security Boundary Assertions
 Validates that tenant Kubernetes manifests enforce complete data, runtime, network,
-and credential compartmentalization.
+and credential compartmentalization under the Decentralized Per-Tenant Gateway architecture.
 """
 
 from tenant_manager.validator import SpecValidator
@@ -24,42 +24,40 @@ def test_tenant_isolation_boundaries():
     assert ns_a == "tenant-acme-corp"
     assert ns_b == "tenant-globex-pharma"
 
-    # 2. Credential Compartmentalization: Zero Upstream Provider Keys in Tenant Namespaces
-    forbidden_key_signatures = ["sk-ant-", "sk-proj-", "AIzaSy", "aws-secret"]
-    for m in manifests_a + manifests_b:
-        m_str = str(m)
-        for sig in forbidden_key_signatures:
-            assert sig not in m_str, f"CRITICAL LEAK: Upstream credential signature '{sig}' found in tenant manifest {m['kind']}!"
+    # 2. BYOK Credential Compartmentalization: Zero Key Bleed Between Tenants
+    secret_a = next(m for m in manifests_a if m["kind"] == "Secret")
+    secret_b = next(m for m in manifests_b if m["kind"] == "Secret")
+    # Acme's keys are in Acme's secret
+    assert secret_a["stringData"]["OPENAI_API_KEY"] == "sk-proj-acme-corp-dedicated-key-2026"
+    assert "azure-globex" not in str(secret_a)
+    # Globex's keys are in Globex's secret
+    assert secret_b["stringData"]["AZURE_API_KEY"] == "azure-globex-compliance-key-2026"
+    assert "sk-proj-acme" not in str(secret_b)
 
-    # 3. NetworkPolicy Isolation: Ingress Restriction
-    netpol_a = next(m for m in manifests_a if m["kind"] == "NetworkPolicy")
-    ingress_rules = netpol_a["spec"]["ingress"]
-    # Only ingress-nginx namespace is whitelisted
+    # 3. OpenWebUI NetworkPolicy Isolation: Ingress Restriction
+    ow_netpol_a = next(m for m in manifests_a if m["kind"] == "NetworkPolicy" and m["metadata"]["name"] == "openwebui-zero-trust-netpol")
+    ingress_rules = ow_netpol_a["spec"]["ingress"]
     assert len(ingress_rules) == 1
     allowed_ingress_ns = ingress_rules[0]["from"][0]["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"]
     assert allowed_ingress_ns == "ingress-nginx"
 
-    # 4. NetworkPolicy Isolation: Cross-Tenant Egress Denial
-    egress_rules = netpol_a["spec"]["egress"]
-    allowed_namespaces = []
-    for rule in egress_rules:
-        to_blocks = rule.get("to", [])
-        for block in to_blocks:
-            if "namespaceSelector" in block:
-                ns_label = block["namespaceSelector"]["matchLabels"].get("kubernetes.io/metadata.name")
-                if ns_label:
-                    allowed_namespaces.append(ns_label)
-
-    # Allowed egress namespaces must ONLY be kube-system (DNS) and litellm (Gateway)
-    assert set(allowed_namespaces) == {"kube-system", "litellm"}
-    assert "tenant-globex-pharma" not in allowed_namespaces
+    # 4. Intra-Namespace Egress: OpenWebUI can ONLY reach local LiteLLM on port 4000
+    egress_rules = ow_netpol_a["spec"]["egress"]
+    local_litellm_rule = next(
+        rule for rule in egress_rules
+        if any(p.get("port") == 4000 for p in rule.get("ports", []))
+    )
+    # The target pod is strictly within the same namespace (podSelector only, no cross-namespaceSelector)
+    assert "namespaceSelector" not in local_litellm_rule["to"][0]
+    assert local_litellm_rule["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == "litellm"
 
     # 5. Cloud Metadata Protection (Anti-SSRF 169.254.169.254)
-    for rule in egress_rules:
-        for block in rule.get("to", []):
-            if "ipBlock" in block:
-                except_list = block["ipBlock"].get("except", [])
-                assert "169.254.169.254/32" in except_list, "Link-local cloud metadata service (169.254.169.254) must be explicitly blocked!"
+    lt_netpol_a = next(m for m in manifests_a if m["kind"] == "NetworkPolicy" and m["metadata"]["name"] == "litellm-zero-trust-netpol")
+    outbound_https_rule = next(
+        rule for rule in lt_netpol_a["spec"]["egress"]
+        if any(p.get("port") == 443 for p in rule.get("ports", []))
+    )
+    assert "169.254.169.254/32" in outbound_https_rule["to"][0]["ipBlock"]["except"]
 
     # 6. Storage Isolation: Independent PVCs
     pvc_a = next(m for m in manifests_a if m["kind"] == "PersistentVolumeClaim")
@@ -68,4 +66,4 @@ def test_tenant_isolation_boundaries():
     assert pvc_b["metadata"]["namespace"] == "tenant-globex-pharma"
     assert pvc_a["metadata"]["namespace"] != pvc_b["metadata"]["namespace"]
 
-    print("\n[PASS] Tenant Isolation Validated: Complete runtime, network, storage, and credential compartmentalization confirmed.")
+    print("\n[PASS] Tenant Isolation Validated: Decentralized per-tenant stack provides complete runtime, network, storage, and BYOK credential compartmentalization.")

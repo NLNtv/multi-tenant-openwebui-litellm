@@ -13,6 +13,7 @@ from tenant_manager.models import (
     IdentityConfig,
     AdminFallbackConfig,
     ComputeConfig,
+    UpstreamCredentialsConfig,
 )
 
 
@@ -35,6 +36,10 @@ def get_valid_tenant_data():
             "rpmLimit": 120,
             "tpmLimit": 120000,
             "allowedModels": ["gpt-4o", "claude-3-5-sonnet"]
+        },
+        "upstreamCredentials": {
+            "openaiApiKey": "sk-proj-acme-corp-private-key",
+            "anthropicApiKey": "sk-ant-acme-corp-private-key"
         },
         "branding": {
             "portalTitle": "Acme Corp AI Workspace",
@@ -71,6 +76,7 @@ def test_valid_tenant_spec():
     assert spec.routing.fqdn == "acme.ai.saasdomain.com"
     assert spec.governance.max_budget_usd == 500.0
     assert "gpt-4o" in spec.governance.allowed_models
+    assert spec.upstream_credentials.openai_api_key == "sk-proj-acme-corp-private-key"
 
 
 def test_invalid_tenant_id_regex():
@@ -111,3 +117,19 @@ def test_short_admin_password_rejected():
     with pytest.raises(ValidationError) as exc:
         TenantSpecification.model_validate(data)
     assert "String should have at least 12 characters" in str(exc.value)
+
+
+def test_byok_credentials_parsing():
+    data = get_valid_tenant_data()
+    data["upstreamCredentials"] = {
+        "azureOpenaiApiKey": "azure-key-123",
+        "azureOpenaiEndpoint": "https://azure-endpoint.com",
+        "awsAccessKeyId": "AKIAEXAMPLE",
+        "awsSecretAccessKey": "SECRETKEYEXAMPLE",
+        "awsRegionName": "eu-central-1"
+    }
+    spec = TenantSpecification.model_validate(data)
+    assert spec.upstream_credentials.azure_openai_api_key == "azure-key-123"
+    assert spec.upstream_credentials.azure_openai_endpoint == "https://azure-endpoint.com"
+    assert spec.upstream_credentials.aws_access_key_id == "AKIAEXAMPLE"
+    assert spec.upstream_credentials.aws_region_name == "eu-central-1"
