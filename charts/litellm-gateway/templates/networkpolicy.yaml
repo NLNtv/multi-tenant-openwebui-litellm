@@ -1,0 +1,110 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-proxy-netpol
+  labels:
+    app.kubernetes.io/name: litellm-proxy
+    app.kubernetes.io/part-of: litellm-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: litellm-proxy
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow incoming requests on port 4000 from all tenant OpenWebUI instances
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              saas.platform.io/tenant: "true"
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: openwebui-tenant
+        # Also allow ingress from administration/CI tools in default or system namespace
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+      ports:
+        - protocol: TCP
+          port: 4000
+  egress:
+    # 1. Allow CoreDNS resolution in kube-system
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. Allow communication with PostgreSQL in this namespace
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: litellm-postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    # 3. Allow communication with Redis in this namespace
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: litellm-redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # 4. Allow HTTPS outbound to upstream LLM providers on the public Internet
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-datastore-netpol
+  labels:
+    app.kubernetes.io/part-of: litellm-gateway
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["litellm-postgres", "litellm-redis"]
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow DB/Redis access ONLY from litellm-proxy in the same namespace
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: litellm-proxy
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+  egress:
+    # Datastores need no external egress except internal DNS if needed
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+{{- end }}

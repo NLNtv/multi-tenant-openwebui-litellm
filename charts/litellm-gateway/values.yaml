@@ -1,0 +1,111 @@
+# Default values for litellm-gateway.
+# Central LLM Gateway with PostgreSQL, Redis, and multi-provider routing.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/berriai/litellm
+  tag: "main-v1.40.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 4000
+  targetPort: 4000
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  host: "litellm-admin.internal.saas.com"
+  tls:
+    - secretName: litellm-admin-tls
+      hosts:
+        - "litellm-admin.internal.saas.com"
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 75
+  targetMemoryUtilizationPercentage: 80
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+podSecurityContext:
+  fsGroup: 1000
+
+# Central LiteLLM Master Key (Used by tenant-manager CLI for provisioning virtual keys)
+masterKey: "sk-litellm-master-super-secret-key-change-in-prod"
+
+# Upstream LLM Provider API Keys (Held centrally, never exposed to tenants)
+upstreamKeys:
+  openaiApiKey: "sk-proj-mock-openai-master-key-replace-in-production"
+  anthropicApiKey: "sk-ant-mock-anthropic-master-key-replace-in-production"
+  geminiApiKey: "AIzaSyMockGeminiMasterKeyReplaceInProd"
+  cohereApiKey: ""
+  awsAccessKeyId: ""
+  awsSecretAccessKey: ""
+  awsRegionName: "us-east-1"
+
+# Database Configuration (PostgreSQL StatefulSet or External Managed DB)
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  database: litellm_db
+  username: litellm_admin
+  password: "litellm_secure_pg_password_change_in_prod"
+  persistence:
+    size: 20Gi
+    storageClass: ""
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+# Redis Caching & Distributed Rate Limiting
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7-alpine"
+  persistence:
+    enabled: false
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Network Policy enforcement
+networkPolicy:
+  enabled: true
+  # Egress to public internet for upstream LLMs
+  allowedEgressCidrs:
+    - 0.0.0.0/0
