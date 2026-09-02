@@ -1,0 +1,60 @@
+apiVersion: saas.platform.io/v1alpha1
+kind: TenantSpecification
+metadata:
+  tenantId: "globex-pharma"
+  tenantName: "Globex Pharmaceuticals"
+  contactEmail: "compliance@globexpharma.com"
+  environment: "production"
+
+routing:
+  subdomain: "globex"
+  baseDomain: "ai.saasdomain.com"
+  tlsClusterIssuer: "letsencrypt-prod"
+
+governance:
+  maxBudgetUsd: 1500.00
+  budgetDuration: "30d"
+  rpmLimit: 200
+  tpmLimit: 250000
+  # Strict compliance: Only vetted models with enterprise BAA
+  allowedModels:
+    - "gpt-4o"
+    - "gpt-4o-mini"
+    - "text-embedding-3-small"
+
+branding:
+  portalTitle: "Globex Research Assistant"
+  defaultModel: "gpt-4o"
+  customLogoUrl: "https://globexpharma.com/assets/biologo.svg"
+  customCss: |
+    :root {
+      --brand-primary: #0f766e;
+      --brand-accent: #14b8a6;
+    }
+
+identity:
+  ldapEnabled: true
+  serverHost: "ldap.globexpharma.internal"
+  serverPort: 636
+  useTls: true
+  validateCert: true
+  searchBase: "DC=globexpharma,DC=internal"
+  bindDn: "CN=llm-proxy-svc,OU=ServiceAccounts,DC=globexpharma,DC=internal"
+  bindPassword: "GlobexPharmaLdapPassSecure2026!"
+  usernameAttribute: "sAMAccountName"
+  searchFilter: "(&(objectClass=user)(memberOf=CN=R_and_D_Team,OU=SecurityGroups,DC=globexpharma,DC=internal))"
+  caCertPem: ""
+
+adminFallback:
+  enabled: true
+  email: "security-ops@globexpharma.com"
+  password: "GlobexEmergencyRecoveryKey2026!"
+
+compute:
+  replicas: 1
+  storageSize: "50Gi"
+  storageClass: "gp3"
+  cpuRequest: "500m"
+  cpuLimit: "2000m"
+  memoryRequest: "1Gi"
+  memoryLimit: "4Gi"

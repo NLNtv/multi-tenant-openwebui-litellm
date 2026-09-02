@@ -1,0 +1,60 @@
+apiVersion: saas.platform.io/v1alpha1
+kind: TenantSpecification
+metadata:
+  tenantId: "acme-corp"
+  tenantName: "Acme Corporation"
+  contactEmail: "admin@acme.com"
+  environment: "production"
+
+routing:
+  subdomain: "acme"
+  baseDomain: "ai.saasdomain.com"
+  tlsClusterIssuer: "letsencrypt-prod"
+
+governance:
+  maxBudgetUsd: 500.00
+  budgetDuration: "30d"
+  rpmLimit: 120
+  tpmLimit: 120000
+  allowedModels:
+    - "gpt-4o"
+    - "gpt-4o-mini"
+    - "claude-3-5-sonnet"
+    - "text-embedding-3-small"
+
+branding:
+  portalTitle: "Acme Corp AI Workspace"
+  defaultModel: "gpt-4o"
+  customLogoUrl: "https://acme.com/assets/logo.png"
+  customCss: |
+    :root {
+      --brand-primary: #003366;
+      --brand-accent: #ff9900;
+    }
+
+identity:
+  ldapEnabled: true
+  serverHost: "ldaps.corp.acme.com"
+  serverPort: 636
+  useTls: true
+  validateCert: true
+  searchBase: "OU=Employees,OU=Users,DC=corp,DC=acme,DC=com"
+  bindDn: "CN=svc-openwebui,OU=ServiceAccounts,DC=corp,DC=acme,DC=com"
+  bindPassword: "AcmeSecureBindPassword2026!"
+  usernameAttribute: "sAMAccountName"
+  searchFilter: "(&(objectClass=user)(memberOf=CN=AI_Access_Group,OU=Groups,DC=corp,DC=acme,DC=com))"
+  caCertPem: ""
+
+adminFallback:
+  enabled: true
+  email: "breakglass-admin@acme.com"
+  password: "AcmeBootstrapRecoveryPass2026!"
+
+compute:
+  replicas: 1
+  storageSize: "20Gi"
+  storageClass: "gp3"
+  cpuRequest: "500m"
+  cpuLimit: "2000m"
+  memoryRequest: "1Gi"
+  memoryLimit: "2Gi"

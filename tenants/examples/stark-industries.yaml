@@ -1,0 +1,62 @@
+apiVersion: saas.platform.io/v1alpha1
+kind: TenantSpecification
+metadata:
+  tenantId: "stark-industries"
+  tenantName: "Stark Industries R&D"
+  contactEmail: "tony@starkindustries.com"
+  environment: "production"
+
+routing:
+  subdomain: "stark"
+  baseDomain: "ai.saasdomain.com"
+  tlsClusterIssuer: "letsencrypt-prod"
+
+governance:
+  maxBudgetUsd: 5000.00
+  budgetDuration: "30d"
+  rpmLimit: 500
+  tpmLimit: 1000000
+  allowedModels:
+    - "gpt-4o"
+    - "gpt-4o-mini"
+    - "claude-3-5-sonnet"
+    - "claude-3-haiku"
+    - "gemini-1.5-pro"
+    - "text-embedding-3-small"
+
+branding:
+  portalTitle: "JARVIS Workspace - Stark Industries"
+  defaultModel: "claude-3-5-sonnet"
+  customLogoUrl: "https://starkindustries.com/assets/arc_reactor.png"
+  customCss: |
+    :root {
+      --brand-primary: #b91c1c;
+      --brand-accent: #f59e0b;
+    }
+
+identity:
+  ldapEnabled: true
+  serverHost: "ad.starkindustries.com"
+  serverPort: 636
+  useTls: true
+  validateCert: true
+  searchBase: "OU=Engineers,DC=starkindustries,DC=com"
+  bindDn: "CN=jarvis-service,OU=Bots,DC=starkindustries,DC=com"
+  bindPassword: "IAmIronManSecurePassword3000!"
+  usernameAttribute: "sAMAccountName"
+  searchFilter: "(&(objectClass=user)(memberOf=CN=AvengerTech,OU=Groups,DC=starkindustries,DC=com))"
+  caCertPem: ""
+
+adminFallback:
+  enabled: true
+  email: "pepper@starkindustries.com"
+  password: "StarkEmergencyAdminAccess2026!"
+
+compute:
+  replicas: 2
+  storageSize: "100Gi"
+  storageClass: "gp3"
+  cpuRequest: "1000m"
+  cpuLimit: "4000m"
+  memoryRequest: "2Gi"
+  memoryLimit: "8Gi"

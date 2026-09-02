@@ -1,0 +1,66 @@
+# Tenant Specification Template
+# Use this file as a schema reference to onboard a new corporate tenant.
+
+apiVersion: saas.platform.io/v1alpha1
+kind: TenantSpecification
+metadata:
+  tenantId: "acme-corp"                    # Alphanumeric slug used for namespace and resource naming
+  tenantName: "Acme Corporation"            # Display name of the enterprise client
+  contactEmail: "it-admin@acme.com"
+  environment: "production"                # production, staging, development
+
+routing:
+  subdomain: "acme"                        # Results in https://acme.ai.saasdomain.com
+  baseDomain: "ai.saasdomain.com"
+  tlsClusterIssuer: "letsencrypt-prod"
+
+governance:
+  # LiteLLM Virtual Key Governance Settings
+  maxBudgetUsd: 500.00                     # Hard monthly dollar spending limit
+  budgetDuration: "30d"                    # Reset duration: "30d", "7d", "24h"
+  rpmLimit: 100                            # Requests Per Minute rate limit
+  tpmLimit: 100000                         # Tokens Per Minute rate limit
+  allowedModels:                           # Whitelist of models accessible to this tenant
+    - "gpt-4o"
+    - "gpt-4o-mini"
+    - "claude-3-5-sonnet"
+    - "claude-3-haiku"
+    - "text-embedding-3-small"
+
+branding:
+  portalTitle: "Acme Corp AI Workspace"
+  defaultModel: "gpt-4o"
+  customLogoUrl: ""
+  customCss: |
+    :root {
+      --brand-primary: #1e3a8a;
+      --brand-accent: #3b82f6;
+    }
+
+identity:
+  # Enterprise Active Directory / LDAPS configuration
+  ldapEnabled: true
+  serverHost: "ldaps.acme.com"
+  serverPort: 636
+  useTls: true
+  validateCert: true
+  searchBase: "OU=Employees,OU=Users,DC=acme,DC=com"
+  bindDn: "CN=svc-ai-portal,OU=ServiceAccounts,DC=acme,DC=com"
+  bindPassword: "VaultStoredSecretPasswordHere!"
+  usernameAttribute: "sAMAccountName"       # sAMAccountName for AD, uid for OpenLDAP
+  searchFilter: "(&(objectClass=user)(memberOf=CN=AIUsers,OU=Groups,DC=acme,DC=com))"
+  caCertPem: ""                            # Optional PEM-formatted CA certificate
+
+adminFallback:
+  enabled: true
+  email: "breakglass-admin@acme.com"
+  password: "GenerateAStrongBootstrapPassword!"
+
+compute:
+  replicas: 1
+  storageSize: "10Gi"
+  storageClass: "gp3"
+  cpuRequest: "250m"
+  cpuLimit: "2000m"
+  memoryRequest: "512Mi"
+  memoryLimit: "2Gi"
