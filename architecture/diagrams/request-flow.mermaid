@@ -4,42 +4,39 @@ sequenceDiagram
     participant Ingress as Ingress Controller (TLS)
     participant OpenWebUI as OpenWebUI Pod (tenant-acme)
     participant LDAPS as Corporate LDAPS (ldaps.acme.com)
-    participant LiteLLM as LiteLLM Proxy Gateway (litellm)
-    participant Redis as Redis Cache (Rate Limits)
-    participant Postgres as PostgreSQL (Spend & Key DB)
-    participant Upstream as Upstream LLM (OpenAI/Anthropic)
+    participant LiteLLM as Local LiteLLM Proxy (tenant-acme:4000)
+    participant Upstream as Upstream LLM (OpenAI/Anthropic/Azure)
 
     Note over User, LDAPS: Phase 1: Authentication
-    User->>Ingress: HTTPS GET https://acme.ai.saas.com
-    Ingress->>OpenWebUI: HTTP Forward (Host: acme.ai.saas.com)
-    OpenWebUI-->>User: Present Login Screen (LDAP Enabled)
+    User->>Ingress: HTTPS GET https://acme.ai.saasdomain.com
+    Ingress->>OpenWebUI: HTTP Forward (Host: acme.ai.saasdomain.com:8080)
+    OpenWebUI-->>User: Present Login Screen (Corporate AD Theme)
     User->>OpenWebUI: Submit Credentials (user@acme.com / password)
     OpenWebUI->>LDAPS: LDAPS Bind & Search (TCP 636 / TLS)
     LDAPS-->>OpenWebUI: Authentication Success (DN & Groups verified)
     OpenWebUI-->>User: Set Secure HTTP-Only Session Cookie
 
-    Note over User, Upstream: Phase 2: Chat Inference & Governance
-    User->>OpenWebUI: POST /api/chat/completions (Prompt: "Analyze quarterly results")
-    OpenWebUI->>LiteLLM: POST /v1/chat/completions<br/>Authorization: Bearer sk-tenant-acme<br/>Payload: {model: "gpt-4o", messages: [...]}
+    Note over User, Upstream: Phase 2: Localized Chat Inference & Governance
+    User->>OpenWebUI: POST /api/chat/completions (Prompt: "Analyze balance sheet")
+    OpenWebUI->>LiteLLM: HTTP POST http://litellm:4000/v1/chat/completions<br/>Authorization: Bearer <tenant-local-key><br/>Payload: {model: "gpt-4o", messages: [...]}
     
-    LiteLLM->>Redis: Check Sliding Window Rate Limits (RPM / TPM)
+    Note over LiteLLM: Evaluate Local Policy & Quotas
+    LiteLLM->>LiteLLM: Check In-Memory / SQLite Rate Limits (RPM / TPM)
     alt Rate Limit Exceeded
-        Redis-->>LiteLLM: 429 Too Many Requests
-        LiteLLM-->>OpenWebUI: HTTP 429 RateLimitExceeded
+        LiteLLM-->>OpenWebUI: HTTP 429 Too Many Requests
         OpenWebUI-->>User: Display Rate Limit Warning
     else Rate Limit OK
-        LiteLLM->>Postgres: Verify Virtual Key: Is current_spend < max_budget?
+        LiteLLM->>LiteLLM: Verify Spend < Tenant max_budget
         alt Budget Exceeded
-            Postgres-->>LiteLLM: Spend ($502.10) >= Budget ($500.00)
             LiteLLM-->>OpenWebUI: HTTP 400/429 BudgetExceededError
             OpenWebUI-->>User: Display Organization Budget Depleted
         else Budget OK
-            LiteLLM->>Upstream: HTTPS POST /v1/chat/completions<br/>Authorization: Bearer <UPSTREAM_MASTER_KEY>
+            LiteLLM->>Upstream: Outbound HTTPS POST (Port 443)<br/>Authorization: Bearer <Tenant-Scoped / BYOK Key>
             Upstream-->>LiteLLM: Stream Tokens (Server-Sent Events)
-            LiteLLM->>OpenWebUI: Stream Tokens to WebUI
+            LiteLLM->>OpenWebUI: Forward Streamed Tokens
             OpenWebUI-->>User: Render Streamed Markdown Response
             
-            Note over LiteLLM, Postgres: Phase 3: Spend Accounting
-            LiteLLM->>Postgres: Increment Spend (+ $0.0034) & Log Audit Record
+            Note over LiteLLM: Phase 3: Localized Accounting
+            LiteLLM->>LiteLLM: Increment Local Spend Tracking Record
         end
     end

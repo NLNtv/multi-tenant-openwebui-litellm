@@ -3,7 +3,9 @@ graph TD
         ClientUser["Corporate Client Browser"]
         UpstreamOpenAI["OpenAI API (api.openai.com:443)"]
         UpstreamAnthropic["Anthropic API (api.anthropic.com:443)"]
-        CorporateLDAP["Corporate Active Directory (ldaps.corp.acme.com:636)"]
+        UpstreamAzure["Azure OpenAI / AWS Bedrock"]
+        CorporateLDAP_A["Acme Active Directory (ldaps.acme.com:636)"]
+        CorporateLDAP_B["Globex Active Directory (ldaps.globex.com:636)"]
     end
 
     subgraph K8sCluster ["Kubernetes Cluster Boundary"]
@@ -11,24 +13,20 @@ graph TD
             IngressCtrl["Ingress-Nginx Controller (LoadBalancer :443)"]
         end
 
-        subgraph TenantA ["Namespace: tenant-acme (NetworkPolicy Restricted)"]
-            PodA["OpenWebUI Pod (Acme)<br/>RunAsUser: 1000<br/>automountServiceAccount: false"]
+        subgraph TenantA ["Namespace: tenant-acme (Isolated Perimeter)"]
+            PodA["OpenWebUI Pod (Acme)<br/>RunAsUser: 1000"]
             PVCA[("Dedicated PVC<br/>(webui.db / docs)")]
+            LiteLLMA["Dedicated LiteLLM Proxy<br/>ClusterIP: litellm:4000<br/>(Acme BYOK / Scoped Keys)"]
             PodA --- PVCA
+            PodA -->|Intra-Namespace HTTP :4000| LiteLLMA
         end
 
-        subgraph TenantB ["Namespace: tenant-globex (NetworkPolicy Restricted)"]
-            PodB["OpenWebUI Pod (Globex)<br/>RunAsUser: 1000<br/>automountServiceAccount: false"]
+        subgraph TenantB ["Namespace: tenant-globex (Isolated Perimeter)"]
+            PodB["OpenWebUI Pod (Globex)<br/>RunAsUser: 1000"]
             PVCB[("Dedicated PVC<br/>(webui.db / docs)")]
+            LiteLLMB["Dedicated LiteLLM Proxy<br/>ClusterIP: litellm:4000<br/>(Globex BYOK / Scoped Keys)"]
             PodB --- PVCB
-        end
-
-        subgraph GatewayNS ["Namespace: litellm (Control Plane)"]
-            LiteLLMProxy["LiteLLM Proxy Deployment<br/>ClusterIP: litellm.litellm.svc:4000"]
-            LiteLLMPG[("PostgreSQL DB<br/>(Keys, Spend, Logs)")]
-            LiteLLMRedis[("Redis Cache<br/>(RPM/TPM Limits)")]
-            LiteLLMProxy --- LiteLLMPG
-            LiteLLMProxy --- LiteLLMRedis
+            PodB -->|Intra-Namespace HTTP :4000| LiteLLMB
         end
 
         subgraph KubeSystem ["Namespace: kube-system"]
@@ -41,27 +39,30 @@ graph TD
     IngressCtrl -->|HTTP 8080 acme.ai.saas.com| PodA
     IngressCtrl -->|HTTP 8080 globex.ai.saas.com| PodB
 
-    %% Tenant Egress Flows
-    PodA -->|Port 4000 Virtual Key A| LiteLLMProxy
-    PodB -->|Port 4000 Virtual Key B| LiteLLMProxy
-    PodA -->|Port 636 LDAPS TLS| CorporateLDAP
+    %% Tenant Internal & External Egress Flows
+    PodA -->|Port 636 LDAPS TLS| CorporateLDAP_A
+    PodB -->|Port 636 LDAPS TLS| CorporateLDAP_B
     PodA -->|Port 53 DNS| CoreDNS
     PodB -->|Port 53 DNS| CoreDNS
+    LiteLLMA -->|Port 53 DNS| CoreDNS
+    LiteLLMB -->|Port 53 DNS| CoreDNS
 
-    %% Gateway Egress Flows
-    LiteLLMProxy -->|HTTPS 443 Master Key| UpstreamOpenAI
-    LiteLLMProxy -->|HTTPS 443 Master Key| UpstreamAnthropic
+    %% Dedicated Proxy Egress to Upstream LLMs (Isolated per tenant)
+    LiteLLMA -->|HTTPS 443 (Acme Keys)| UpstreamOpenAI
+    LiteLLMA -->|HTTPS 443 (Acme Keys)| UpstreamAnthropic
+    LiteLLMB -->|HTTPS 443 (Globex Keys)| UpstreamAzure
 
     %% Blocked Traffic Indicators (Zero Trust)
     PodA -.->|BLOCKED: Cross-Tenant Denied| PodB
-    PodB -.->|BLOCKED: Cross-Tenant Denied| PodA
+    LiteLLMA -.->|BLOCKED: Cross-Tenant Denied| LiteLLMB
     PodA -.->|BLOCKED: Direct Internet Denied| UpstreamOpenAI
     PodA -.->|BLOCKED: Metadata 169.254.169.254 Denied| Internet
+    LiteLLMA -.->|BLOCKED: Metadata 169.254.169.254 Denied| Internet
 
     classDef allowed stroke:#2ecc71,stroke-width:2px,fill:#e8f8f5;
     classDef blocked stroke:#e74c3c,stroke-width:2px,stroke-dasharray: 5 5,fill:#fadbd8;
-    classDef gateway stroke:#3498db,stroke-width:2px,fill:#ebf5fb;
     classDef tenant stroke:#9b59b6,stroke-width:2px,fill:#f5eef8;
+    classDef proxy stroke:#3498db,stroke-width:2px,fill:#ebf5fb;
 
-    class LiteLLMProxy,LiteLLMPG,LiteLLMRedis gateway;
     class PodA,PodB tenant;
+    class LiteLLMA,LiteLLMB proxy;
