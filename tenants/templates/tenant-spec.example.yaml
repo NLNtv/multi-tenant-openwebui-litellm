@@ -1,4 +1,4 @@
-# Tenant Specification Template
+# Tenant Specification Template (Decentralized Per-Tenant Gateway)
 # Use this file as a schema reference to onboard a new corporate tenant.
 
 apiVersion: saas.platform.io/v1alpha1
@@ -15,17 +15,27 @@ routing:
   tlsClusterIssuer: "letsencrypt-prod"
 
 governance:
-  # LiteLLM Virtual Key Governance Settings
+  # Local LiteLLM Proxy Governance Settings
   maxBudgetUsd: 500.00                     # Hard monthly dollar spending limit
   budgetDuration: "30d"                    # Reset duration: "30d", "7d", "24h"
-  rpmLimit: 100                            # Requests Per Minute rate limit
-  tpmLimit: 100000                         # Tokens Per Minute rate limit
+  rpmLimit: 120                            # Requests Per Minute rate limit
+  tpmLimit: 120000                         # Tokens Per Minute rate limit
   allowedModels:                           # Whitelist of models accessible to this tenant
     - "gpt-4o"
     - "gpt-4o-mini"
     - "claude-3-5-sonnet"
     - "claude-3-haiku"
     - "text-embedding-3-small"
+
+# Upstream Model Provider Credentials (Supports BYOK or Platform Scoped Keys)
+upstreamCredentials:
+  openaiApiKey: "sk-proj-acme-corp-private-key-here"
+  anthropicApiKey: "sk-ant-acme-corp-private-key-here"
+  azureOpenaiApiKey: ""
+  azureOpenaiEndpoint: ""
+  awsAccessKeyId: ""
+  awsSecretAccessKey: ""
+  awsRegionName: "us-east-1"
 
 branding:
   portalTitle: "Acme Corp AI Workspace"

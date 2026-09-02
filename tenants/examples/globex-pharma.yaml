@@ -22,6 +22,11 @@ governance:
     - "gpt-4o-mini"
     - "text-embedding-3-small"
 
+# HIPAA / Enterprise BAA Azure OpenAI BYOK Keys
+upstreamCredentials:
+  azureOpenaiApiKey: "azure-globex-compliance-key-2026"
+  azureOpenaiEndpoint: "https://globex-pharma-eastus.openai.azure.com/"
+
 branding:
   portalTitle: "Globex Research Assistant"
   defaultModel: "gpt-4o"

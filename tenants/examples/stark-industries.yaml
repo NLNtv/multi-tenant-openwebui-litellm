@@ -24,6 +24,14 @@ governance:
     - "gemini-1.5-pro"
     - "text-embedding-3-small"
 
+# Multi-Provider BYOK Keys
+upstreamCredentials:
+  openaiApiKey: "sk-proj-stark-enterprise-high-quota"
+  anthropicApiKey: "sk-ant-stark-enterprise-high-quota"
+  awsAccessKeyId: "AKIAIOSFODNN7EXAMPLE"
+  awsSecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  awsRegionName: "us-east-1"
+
 branding:
   portalTitle: "JARVIS Workspace - Stark Industries"
   defaultModel: "claude-3-5-sonnet"

@@ -22,6 +22,10 @@ governance:
     - "claude-3-5-sonnet"
     - "text-embedding-3-small"
 
+upstreamCredentials:
+  openaiApiKey: "sk-proj-acme-corp-dedicated-key-2026"
+  anthropicApiKey: "sk-ant-acme-corp-dedicated-key-2026"
+
 branding:
   portalTitle: "Acme Corp AI Workspace"
   defaultModel: "gpt-4o"
